@@ -24,12 +24,14 @@ from .config import (
     parse_services,
 )
 from .dashboard import (
+    build_cert_table,
     build_overview_table,
     console,
     print_status_line,
     render_dashboard,
 )
 from .monitor import run_all_checks, run_check
+from .models import ServiceType, Status
 from .storage import Storage
 
 
@@ -216,6 +218,48 @@ def prune(config: str | None, days: int) -> None:
     deleted = storage.prune(days=days)
     console.print(f"[green]✓[/green] Pruned {deleted} records older than {days} days")
     storage.close()
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option("--days", "-d", default=None, type=int,
+              help="Show only certificates expiring within N days")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def certs(config: str | None, days: int | None, as_json: bool) -> None:
+    """Check SSL certificate expiry for configured SSL services."""
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    services = parse_services(cfg)
+    ssl_services = [s for s in services if s.service_type == ServiceType.SSL]
+    if not ssl_services:
+        console.print("[yellow]No SSL services configured.[/yellow]")
+        console.print("Add a service with [bold]type: ssl[/bold] to your config.")
+        sys.exit(0)
+
+    results = asyncio.run(run_all_checks(ssl_services))
+
+    # Optional filter by expiry window
+    if days is not None:
+        results = [
+            r
+            for r in results
+            if r.details.get("days_until_expiry") is None
+            or r.details["days_until_expiry"] <= days
+        ]
+
+    if as_json:
+        import json
+        click.echo(json.dumps([r.to_dict() for r in results], indent=2, default=str))
+    else:
+        table = build_cert_table(results)
+        console.print(table)
+        bad = [r for r in results if r.status != Status.UP]
+        if bad:
+            sys.exit(1)
 
 
 @cli.command()

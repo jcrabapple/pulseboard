@@ -157,3 +157,52 @@ def print_status_line(results: list[CheckResult]) -> None:
         emoji = status_emoji(r.status)
         parts.append(f"{emoji} {r.service_name} ({r.latency_ms:.0f}ms)")
     console.print(" | ".join(parts))
+
+
+def build_cert_table(results: list[CheckResult]) -> Table:
+    """Build a certificate expiry overview table from SSL check results."""
+    table = Table(
+        title="🔒 SSL Certificate Status",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Status", width=6, justify="center")
+    table.add_column("Service", style="bold", min_width=18)
+    table.add_column("Host", min_width=22)
+    table.add_column("Issuer", min_width=24)
+    table.add_column("Expires", width=14, justify="right")
+    table.add_column("Days Left", width=10, justify="right")
+
+    def _sort_key(r: CheckResult) -> float:
+        days = r.details.get("days_until_expiry")
+        return days if days is not None else 1e9
+
+    for r in sorted(results, key=_sort_key):
+        host = f"{r.details.get('host', '?')}:{r.details.get('port', '?')}"
+        issuer = r.details.get("issuer", "<unknown>")
+        if len(issuer) > 40:
+            issuer = issuer[:37] + "..."
+        expires = r.details.get("not_after") or "?"
+        days = r.details.get("days_until_expiry")
+        if days is None:
+            days_str = "[red]?[/red]"
+        elif days <= 0:
+            days_str = f"[red]{days:.0f}d (expired)[/red]"
+        elif days <= 14:
+            days_str = f"[red]{days:.0f}d[/red]"
+        elif days <= 30:
+            days_str = f"[yellow]{days:.0f}d[/yellow]"
+        else:
+            days_str = f"[green]{days:.0f}d[/green]"
+
+        table.add_row(
+            Text(status_emoji(r.status), style=status_style(r.status)),
+            r.service_name,
+            host,
+            issuer,
+            expires,
+            days_str,
+        )
+    return table

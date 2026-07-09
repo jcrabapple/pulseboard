@@ -16,6 +16,7 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 ## Features
 
 - **HTTP & TCP monitoring** — check any URL or TCP port
+- **SSL certificate expiry monitoring** — track cert validity with configurable warning window
 - **SQLite history** — every check stored, queryable, prunable
 - **Live TUI dashboard** — Rich-powered terminal UI with latency bars, P95/P99 stats
 - **Alerting** — webhook notifications + terminal bell on status changes
@@ -53,6 +54,11 @@ pulseboard status --hours 24
 
 # 7. Prune old records
 pulseboard prune --days 30
+
+# 8. Check SSL certificate expiry for SSL services
+pulseboard certs                    # all SSL services
+pulseboard certs --days 30          # only show certs expiring within 30 days
+pulseboard certs --json             # JSON output
 ```
 
 ## Configuration
@@ -83,6 +89,12 @@ services:
     port: 80
     interval: 60
     tags: [network]
+
+  - name: GitHub SSL
+    type: ssl
+    url: https://github.com
+    interval: 86400
+    ssl_expiry_warning_days: 30
 ```
 
 ## Commands
@@ -94,6 +106,7 @@ services:
 | `pulseboard watch` | Continuous monitoring with live output |
 | `pulseboard dashboard` | Full TUI dashboard |
 | `pulseboard status` | Status summary from history |
+| `pulseboard certs` | Check SSL certificate expiry |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
 
@@ -105,6 +118,14 @@ pytest
 ```
 
 ## Changelog
+
+### v0.2.0 — SSL Certificate Monitoring (2026-07-09)
+- New `ssl` service type for certificate expiry monitoring
+- `pulseboard certs` command with rich table + JSON output
+- Per-service `ssl_expiry_warning_days` config (default 14)
+- Optional `ssl_sni` override for virtual-hosted TLS
+- Status semantics: UP / DEGRADED (within warning) / DOWN (expired or unreachable)
+- Real cert info captured: issuer, subject, expiry, serial, signature algorithm
 
 ### v0.1.0 — Initial Release (2026-07-09)
 - HTTP and TCP health checking
@@ -118,8 +139,8 @@ pytest
 
 ## Roadmap
 
+- [x] SSL certificate expiry checks
 - [ ] DNS monitoring
-- [ ] SSL certificate expiry checks
 - [ ] Grafana/Prometheus metrics export
 - [ ] Response body content validation (regex/JSON path)
 - [ ] Incident timeline view

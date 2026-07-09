@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from .models import CheckResult, ServiceConfig, ServiceType, Status
+from .ssl_check import check_ssl
 
 
 async def check_http(service: ServiceConfig) -> CheckResult:
@@ -119,6 +120,8 @@ async def run_check(service: ServiceConfig) -> CheckResult:
     """Dispatch to the right checker based on service type."""
     if service.service_type == ServiceType.TCP:
         return await check_tcp(service)
+    if service.service_type == ServiceType.SSL:
+        return await check_ssl(service)
     return await check_http(service)
 
 

@@ -11,6 +11,7 @@ from typing import Any
 class ServiceType(str, Enum):
     HTTP = "http"
     TCP = "tcp"
+    SSL = "ssl"
 
 
 class Status(str, Enum):
@@ -33,9 +34,12 @@ class ServiceConfig:
     headers: dict[str, str] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     alert_webhook: str | None = None
-    # For TCP checks
+    # For TCP / SSL checks
     host: str | None = None
     port: int | None = None
+    # For SSL certificate checks
+    ssl_expiry_warning_days: int = 14
+    ssl_sni: str | None = None  # optional SNI override
 
 
 @dataclass

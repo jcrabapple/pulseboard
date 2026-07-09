@@ -55,6 +55,8 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             alert_webhook=entry.get("alert_webhook"),
             host=entry.get("host"),
             port=entry.get("port"),
+            ssl_expiry_warning_days=entry.get("ssl_expiry_warning_days", 14),
+            ssl_sni=entry.get("ssl_sni"),
         )
         services.append(svc)
     return services
@@ -107,6 +109,13 @@ services:
     url: https://prose.sh
     interval: 300
     tags: [web, blog]
+
+  # SSL certificate expiry monitoring
+  - name: GitHub SSL
+    type: ssl
+    url: https://github.com
+    interval: 86400  # check once a day
+    ssl_expiry_warning_days: 30  # alert when cert is within 30 days of expiry
 """
 
 
