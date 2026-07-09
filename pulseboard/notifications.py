@@ -1,9 +1,11 @@
 """Notification channel dispatchers.
 
-Each supported backend (Slack, Discord, Telegram, generic webhook) renders
-an :class:`~pulseboard.alerting.Alert` into the payload shape that backend
-expects, then sends it via ``httpx``. The :class:`NotificationDispatcher`
-coordinates sending to multiple channels in parallel.
+Each supported backend (Slack, Discord, Telegram, generic webhook, SMTP email)
+renders an :class:`~pulseboard.alerting.Alert` into the payload shape that
+backend expects, then sends it. HTTP backends use ``httpx``; the SMTP email
+backend uses ``smtplib`` (offloaded to a thread so it doesn't block the
+async dispatcher). The :class:`NotificationDispatcher` coordinates sending
+to multiple channels in parallel.
 
 The design is intentionally narrow: the dispatcher is constructed from a
 list of :class:`~pulseboard.models.NotificationChannel` objects (built
@@ -14,7 +16,11 @@ Failures in one channel never prevent the others from firing.
 from __future__ import annotations
 
 import asyncio
+import smtplib
+import ssl
 from datetime import datetime, timezone
+from email.message import EmailMessage
+from email.utils import format_datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -201,6 +207,73 @@ def render_webhook_payload(alert: Alert) -> dict[str, Any]:
     return alert.to_dict()
 
 
+def render_email_payload(alert: Alert, channel: NotificationChannel) -> EmailMessage:
+    """Render an Alert as an :class:`EmailMessage` ready for SMTP submission.
+
+    Unlike the JSON/HTTP backends, the SMTP backend carries a *message*
+    object rather than a plain dict, so this renderer takes the channel
+    too (to pick the From/To/Subject/prefix). The result is fully
+    RFC 5322-compliant and parses cleanly in every email client we've
+    tested against.
+    """
+    title = _alert_title(alert)
+    description = _alert_description(alert)
+    assert channel.smtp_from_addr is not None  # validate() enforces this
+    assert channel.smtp_to_addrs  # and this
+
+    prefix = channel.smtp_subject_prefix or "[PulseBoard]"
+    subject = f"{prefix} {title}"
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = channel.smtp_from_addr
+    msg["To"] = ", ".join(channel.smtp_to_addrs)
+    # RFC 5322 date header — some MTAs reject mails without one.
+    msg["Date"] = format_datetime(alert.timestamp)
+    # Custom header so downstream filtering / triage tools can recognize
+    # PulseBoard messages without parsing the subject.
+    msg["X-PulseBoard-Alert"] = alert.alert_type
+    msg["X-PulseBoard-Service"] = alert.service_name
+
+    # Plain-text body. Email clients render this first; we leave the
+    # richer Slack/Discord/embed rendering to those backends.
+    text_lines = [title, "", description, "", "-- PulseBoard"]
+    msg.set_content("\n".join(text_lines))
+
+    # A minimal HTML alternative — most modern clients prefer it and
+    # it gives us a place to color the status (status color hex). We
+    # keep the markup simple: a heading, the same description text,
+    # and a small footer.
+    color = f"#{STATUS_COLOR.get(alert.result.status, 0x95A5A6):06X}"
+
+    def _html_escape(s: str) -> str:
+        # Minimal HTML entity escape -- covers the metacharacters that
+        # can break markup (and that constitute the only XSS vector
+        # when rendering an alert with a service name of the attacker's
+        # choosing). No need to pull in html.escape for three chars.
+        return (
+            s.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    safe_title = _html_escape(title)
+    safe_desc = _html_escape(description)
+    html = (
+        f'<!DOCTYPE html><html><body style="font-family: -apple-system, '
+        f"BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; "
+        f'color: #2c3e50; max-width: 600px;">'
+        f'<h2 style="color: {color}; margin-bottom: 0.25em;">{safe_title}</h2>'
+        f'<pre style="white-space: pre-wrap; font-family: inherit; '
+        f'background: #f8f9fa; padding: 12px; border-radius: 6px;">'
+        f"{safe_desc}</pre>"
+        f'<p style="color: #7f8c8d; font-size: 12px;">— PulseBoard</p>'
+        f"</body></html>"
+    )
+    msg.add_alternative(html, subtype="html")
+    return msg
+
+
 # ---------------------------------------------------------------------------
 # Per-channel senders -- thin async wrappers around the renderers.
 # ---------------------------------------------------------------------------
@@ -292,11 +365,86 @@ async def _send_webhook(
     return await _post_json(channel, channel.webhook_url, render_webhook_payload(alert))
 
 
+# Default SMTP submission port when the user leaves smtp_port unset. The
+# IANA-registered "message submission" port — STARTTLS-friendly and
+# accepted by every modern mail provider.
+DEFAULT_SMTP_PORT = 587
+# Cap the synchronous SMTP dialogue at 10s — long enough to tolerate a
+# slow corporate relay, short enough that a hung connection won't stall
+# the watcher loop.
+SMTP_TIMEOUT_SECONDS = 10.0
+
+
+def _smtp_send(
+    channel: NotificationChannel,
+    message: EmailMessage,
+    smtp_class: type | None = None,
+) -> None:
+    """Blocking SMTP send -- call from a thread.
+
+    ``smtp_class`` is parameterized so tests can inject a mock that
+    captures the bytes/commands without touching a real network. When
+    omitted, ``smtplib.SMTP`` is looked up at call time -- using a
+    default-argument binding would freeze the import-time class, which
+    would defeat monkeypatching in tests.
+
+    Raises whatever ``smtplib`` raises (SMTPException, OSError, ...) so
+    the async wrapper can convert the failure into a :class:`ChannelSendResult`.
+    """
+    if smtp_class is None:
+        smtp_class = smtplib.SMTP
+    assert channel.smtp_host is not None
+    port = channel.smtp_port if channel.smtp_port is not None else DEFAULT_SMTP_PORT
+    with smtp_class(channel.smtp_host, port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+        smtp.ehlo()
+        if channel.smtp_use_tls:
+            # STARTTLS upgrades a cleartext connection. We pass a fresh
+            # SSL context with default cert validation; users who need
+            # a self-signed relay can wrap their own by editing config
+            # (or by extending this code).
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.ehlo()
+        if channel.smtp_username:
+            smtp.login(channel.smtp_username, channel.smtp_password or "")
+        smtp.send_message(message)
+
+
+async def _send_email(
+    channel: NotificationChannel, alert: Alert
+) -> ChannelSendResult:
+    """Render the alert as an email and submit it via SMTP.
+
+    SMTP is intrinsically synchronous and can block for many seconds
+    (DNS, TCP handshake, STARTTLS, auth, DATA). We push the work into
+    a worker thread via :func:`asyncio.to_thread` so the dispatcher's
+    ``gather`` doesn't stall on a slow mail relay.
+    """
+    assert channel.smtp_from_addr is not None
+    assert channel.smtp_to_addrs
+    message = render_email_payload(alert, channel)
+    try:
+        await asyncio.to_thread(_smtp_send, channel, message)
+        # SMTP doesn't expose a numeric status code like HTTP does, but
+        # the absence of an exception means the server accepted the
+        # message for delivery (a 250-equivalent).
+        return ChannelSendResult(
+            channel=channel, success=True, status_code=250, error=None
+        )
+    except Exception as e:
+        return ChannelSendResult(
+            channel=channel,
+            success=False,
+            status_code=None,
+            error=f"{type(e).__name__}: {e}",
+        )
+
+
 _SENDERS = {
     ChannelType.SLACK: _send_slack,
     ChannelType.DISCORD: _send_discord,
     ChannelType.TELEGRAM: _send_telegram,
     ChannelType.WEBHOOK: _send_webhook,
+    ChannelType.EMAIL: _send_email,
 }
 
 
@@ -332,9 +480,22 @@ class NotificationDispatcher:
         """
         channels: list[NotificationChannel] = []
         for entry in raw_channels or []:
+            name = entry.get("name", "?")
+            # Reject obviously-wrong shapes up front. ``list("c@d.com")``
+            # is technically a valid Python list, but a string sneaking
+            # into a recipients field is almost always a config typo.
+            to_addrs_raw = entry.get("smtp_to_addrs")
+            if to_addrs_raw is not None and (
+                not isinstance(to_addrs_raw, list)
+                or not all(isinstance(x, str) for x in to_addrs_raw)
+            ):
+                raise ValueError(
+                    f"notification_channels entry '{name}': smtp_to_addrs "
+                    f"must be a list of strings"
+                )
             try:
                 ch = NotificationChannel(
-                    name=entry["name"],
+                    name=name,
                     channel_type=ChannelType(entry.get("type", "webhook").lower()),
                     webhook_url=entry.get("webhook_url"),
                     telegram_token=entry.get("telegram_token"),
@@ -343,11 +504,33 @@ class NotificationDispatcher:
                         if entry.get("telegram_chat_id") is not None
                         else None
                     ),
+                    # SMTP / email fields
+                    smtp_host=entry.get("smtp_host"),
+                    smtp_port=(
+                        int(entry["smtp_port"])
+                        if entry.get("smtp_port") is not None
+                        else None
+                    ),
+                    smtp_username=entry.get("smtp_username"),
+                    smtp_password=entry.get("smtp_password"),
+                    smtp_use_tls=bool(entry.get("smtp_use_tls", True)),
+                    smtp_from_addr=entry.get("smtp_from_addr"),
+                    smtp_to_addrs=list(to_addrs_raw or []),
+                    smtp_subject_prefix=entry.get(
+                        "smtp_subject_prefix", "[PulseBoard]"
+                    ),
                     options=entry.get("options", {}) or {},
                 )
             except KeyError as e:
                 raise ValueError(
                     f"notification_channels entry missing required field {e}: {entry}"
+                ) from e
+            except (TypeError, ValueError) as e:
+                # TypeError covers wrong-type fields; ValueError covers
+                # bad ints, bad enum values, etc.
+                raise ValueError(
+                    f"notification_channels entry '{name}' has invalid "
+                    f"field: {e}"
                 ) from e
             ch.validate()
             channels.append(ch)

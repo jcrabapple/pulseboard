@@ -300,6 +300,19 @@ services:
   #       type: telegram
   #       telegram_token: "123456:abcdef"
   #       telegram_chat_id: "-1001234567890"
+  #     # Email channel -- uses stdlib smtplib, no extra dependency.
+  #     - name: oncall-email
+  #       type: email
+  #       smtp_host: smtp.gmail.com
+  #       smtp_port: 587              # defaults to 587 if omitted
+  #       smtp_username: alerts@gmail.com
+  #       smtp_password: app-password  # use an app password, not your real one
+  #       smtp_use_tls: true           # STARTTLS (strongly recommended)
+  #       smtp_from_addr: alerts@gmail.com
+  #       smtp_to_addrs:
+  #         - oncall@example.com
+  #         - manager@example.com
+  #       smtp_subject_prefix: "[Oncall]"  # defaults to "[PulseBoard]"
   #
   # Run ``pulseboard notify-test`` to verify a channel config without
   # waiting for a real outage.

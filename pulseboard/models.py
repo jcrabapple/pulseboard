@@ -34,6 +34,7 @@ class ChannelType(str, Enum):
     DISCORD = "discord"
     TELEGRAM = "telegram"
     WEBHOOK = "webhook"  # generic JSON POST (the original alert_webhook)
+    EMAIL = "email"  # SMTP — uses stdlib smtplib, no new deps
 
 
 # Status colors in the same 0xRRGGBB hex format that Discord embeds and
@@ -72,6 +73,16 @@ class NotificationChannel:
     telegram_token: str | None = None
     # Telegram: numeric chat_id or @channelname to post to.
     telegram_chat_id: str | None = None
+    # Email / SMTP fields. All optional at the type level because they only
+    # apply to ``channel_type == EMAIL``; ``validate()`` enforces presence.
+    smtp_host: str | None = None
+    smtp_port: int | None = None  # defaults to 587 (submission) when None
+    smtp_username: str | None = None
+    smtp_password: str | None = None  # use a YAML key, not a real password
+    smtp_use_tls: bool = True  # STARTTLS — strongly recommended
+    smtp_from_addr: str | None = None  # RFC 5322 From: address
+    smtp_to_addrs: list[str] = field(default_factory=list)  # one or more recipients
+    smtp_subject_prefix: str = "[PulseBoard]"  # shown in the subject line
     # Free-form options bag for future expansion (e.g. message_thread_id).
     options: dict[str, Any] = field(default_factory=dict)
 
@@ -108,6 +119,29 @@ class NotificationChannel:
                 raise ValueError(
                     f"Notification channel '{self.name}' (telegram) requires "
                     "'telegram_chat_id'"
+                )
+        elif self.channel_type == ChannelType.EMAIL:
+            if not self.smtp_host:
+                raise ValueError(
+                    f"Notification channel '{self.name}' (email) requires "
+                    "'smtp_host'"
+                )
+            if self.smtp_port is not None and not (
+                1 <= int(self.smtp_port) <= 65535
+            ):
+                raise ValueError(
+                    f"Notification channel '{self.name}' (email): smtp_port "
+                    f"must be 1-65535, got {self.smtp_port}"
+                )
+            if not self.smtp_from_addr:
+                raise ValueError(
+                    f"Notification channel '{self.name}' (email) requires "
+                    "'smtp_from_addr'"
+                )
+            if not self.smtp_to_addrs:
+                raise ValueError(
+                    f"Notification channel '{self.name}' (email) requires at "
+                    "least one entry in 'smtp_to_addrs'"
                 )
 
 

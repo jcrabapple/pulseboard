@@ -24,7 +24,7 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 - **CSV/JSON export** — pipe-friendly history export with rich filters
 - **Live TUI dashboard** — Rich-powered terminal UI with latency bars, P95/P99 stats
 - **Alerting** — webhook notifications + terminal bell on status changes
-- **Notification channels** — Slack, Discord, Telegram, and generic JSON webhooks
+- **Notification channels** — Slack, Discord, Telegram, email (SMTP), and generic JSON webhooks
 - **YAML config** — simple, human-readable service definitions
 - **Percentile latency** — P95, P99, min, max tracked per service
 - **Auto-pruning** — configurable history retention
@@ -217,17 +217,40 @@ settings:
     - name: pager-webhook
       type: webhook
       webhook_url: https://pagerduty.example/incoming/abc
+    # SMTP email channel — uses stdlib smtplib, no extra dependency.
+    # Works with any SMTP relay: Gmail, Fastmail, your work Exchange, a
+    # local postfix, etc.
+    - name: oncall-email
+      type: email
+      smtp_host: smtp.gmail.com
+      smtp_port: 587              # defaults to 587 (submission) if omitted
+      smtp_username: alerts@gmail.com
+      smtp_password: app-password  # Gmail users: use an app password
+      smtp_use_tls: true           # STARTTLS — strongly recommended
+      smtp_from_addr: alerts@gmail.com
+      smtp_to_addrs:
+        - oncall@example.com
+        - manager@example.com
+      smtp_subject_prefix: "[Oncall]"  # default: "[PulseBoard]"
 
 services:
   - name: api
     url: https://api.example.com/health
     alert_channels: [ops-slack, pager-webhook]   # this service only uses 2
   - name: blog
-    url: https://blog.example.com                 # no override → all 4 channels fire
+    url: https://blog.example.com                 # no override → all 5 channels fire
 ```
 
 Verify your setup with `pulseboard notify-test` (sends a synthetic DOWN
 alert) and inspect what's wired up with `pulseboard notify-list`.
+
+The email channel sends an RFC 5322 message with a multipart
+plain/HTML body (so Gmail, Outlook, and Apple Mail all render it
+well), a configurable `[Subject]` prefix, and `X-PulseBoard-*` headers
+for downstream filtering. The SMTP dialogue is offloaded to a worker
+thread so a slow relay never stalls the watcher loop, and STARTTLS +
+plaintext auth both work — set `smtp_use_tls: false` for local relays
+that don't speak TLS.
 
 ## Development
 
@@ -237,6 +260,18 @@ pytest
 ```
 
 ## Changelog
+
+### v0.8.0 — Email Notifications (SMTP) (2026-07-09)
+- New `email` channel type: SMTP delivery via stdlib `smtplib` (zero new dependencies)
+- New `render_email_payload()` builds a multipart `EmailMessage` (plain + HTML) with `X-PulseBoard-Alert` and `X-PulseBoard-Service` headers for downstream filtering
+- New `_send_email()` async wrapper pushes the synchronous SMTP dialogue into a worker thread (`asyncio.to_thread`) so a slow relay never stalls the watcher loop
+- Supports STARTTLS (default on), optional SMTP AUTH, configurable port (default 587), and a custom subject prefix
+- Multiple recipients via `smtp_to_addrs: [a@x, b@y]` — validated at config-load time as a list of strings
+- HTML body color-codes the status heading using the same palette as Slack/Discord
+- HTML escaping on the title and description to neutralize XSS-via-service-name
+- Per-service `alert_channels: [oncall-email]` routing works exactly like the existing HTTP backends
+- `pulseboard notify-test` and `pulseboard notify-list` work out of the box for email channels (no CLI changes needed)
+- 36 new tests cover payload rendering, validation, dispatcher routing, SMTP interaction, failure modes, and concurrent fan-out — no live network required
 
 ### v0.7.0 — Notification Channels (2026-07-09)
 - New `pulseboard.notifications` module with `NotificationDispatcher` for fan-out to multiple channels in parallel
@@ -310,8 +345,7 @@ pytest
 - [x] Response body content validation (regex/JSON path)
 - [x] Configurable alert thresholds (latency, error rate)
 - [x] Export/import history (CSV, JSON)
-- [x] Notification channels (Slack, Discord, Telegram, generic webhook)
-- [ ] Email notifications (SMTP)
+- [x] Notification channels (Slack, Discord, Telegram, email, generic webhook)
 - [ ] Grafana/Prometheus metrics export
 - [ ] Incident timeline view
 - [ ] Web UI dashboard
