@@ -25,6 +25,7 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 - **Live TUI dashboard** — Rich-powered terminal UI with latency bars, P95/P99 stats
 - **Alerting** — webhook notifications + terminal bell on status changes
 - **Notification channels** — Slack, Discord, Telegram, email (SMTP), and generic JSON webhooks
+- **Incident timeline** — durable, queryable history of every state-change outage with duration tracking
 - **YAML config** — simple, human-readable service definitions
 - **Percentile latency** — P95, P99, min, max tracked per service
 - **Auto-pruning** — configurable history retention
@@ -74,6 +75,15 @@ pulseboard export
 pulseboard export -o history.csv
 pulseboard export -o history.json
 pulseboard export -s "GitHub" --hours 24
+
+# 12. View the incident timeline (durable across restarts)
+pulseboard incidents                # last 24h of outages (default sort: newest first)
+pulseboard incidents --hours 168    # last 7 days
+pulseboard incidents -s "GitHub"    # filter to a service
+pulseboard incidents --type down    # only DOWN incidents (skip DEGRADED)
+pulseboard incidents --open         # only show ongoing outages
+pulseboard incidents --summary      # aggregate counts / total downtime / MTTR
+pulseboard incidents --json         # machine-readable
 ```
 
 ## Configuration
@@ -191,8 +201,50 @@ A DOWN status from the underlying check is never upgraded by thresholds.
 | `pulseboard export` | Export stored check history to CSV or JSON |
 | `pulseboard notify-test` | Send a synthetic alert through every configured notification channel |
 | `pulseboard notify-list` | List configured notification channels |
+| `pulseboard incidents` | View the incident timeline (durable state-change history) |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
+
+## Incident Timeline
+
+The `pulseboard incidents` command shows every outage that has been
+recorded for your services — a durable counterpart to the in-memory
+`AlertManager` that survives watcher restarts. An *incident* is any
+contiguous period during which a service was not in the `UP` state.
+DEGRADED↔DOWN flapping inside the same outage is folded into a single
+incident so the timeline stays readable.
+
+Incidents are written automatically by `pulseboard watch` and
+`pulseboard dashboard`. The `pulseboard incidents` command then lets
+you slice the timeline however you want:
+
+```bash
+# Last 24h of outages, newest first
+pulseboard incidents
+
+# Last 7 days, JSON output for piping into other tools
+pulseboard incidents --hours 168 --json
+
+# Only show ongoing outages
+pulseboard incidents --open
+
+# Filter to a single service and skip DEGRADED-only incidents
+pulseboard incidents -s "api" --type down
+
+# Aggregate stats: total downtime, MTTR, longest incident, etc.
+pulseboard incidents --summary
+```
+
+The JSON output includes both the per-incident list and an aggregate
+`summary` block (`total`, `open`, `closed`, `down`, `degraded`,
+`total_downtime_seconds`, `average_duration_seconds`,
+`longest_duration_seconds`) so a downstream dashboard or pager system
+can pull MTTR without re-implementing the math.
+
+The `incidents` table is schema-migrated automatically on first
+launch. The schema also includes a partial index on
+`(service_name) WHERE ended_at IS NULL` so the "what's still
+broken right now" query stays fast as the history grows.
 
 ## Notification Channels
 
@@ -260,6 +312,23 @@ pytest
 ```
 
 ## Changelog
+
+### v0.9.0 — Incident Timeline (2026-07-09)
+- New `incidents` table in SQLite: every UP→non-UP transition opens an incident row, every non-UP→UP closes it
+- New `pulseboard incidents` command with rich table, JSON output, and `--summary` mode
+- Filters: `--service`, `--hours`, `--from`/`--to`, `--type {down,degraded,all}`, `--open` (only ongoing), `--limit`
+- New `Incident` dataclass in `pulseboard.incidents` with `severity`, `is_open`, `duration_seconds`, `peak_status`, `to_dict()`
+- New `pulseboard.incidents.format_duration()` for human-friendly duration rendering (45s / 2m 5s / 1h 2m / 1d 1h)
+- New `pulseboard.incidents.summarize()` produces MTTR / total-downtime / longest-incident stats for the JSON output
+- New `reconstruct_incidents()` walks raw check history to recover incidents from a fresh import (no live recording needed)
+- New `Storage.record_incident()`, `close_open_incident()`, `get_incidents()`, `prune_incidents()` with rich filter set
+- New `AlertManager.previous_status()` exposes the prior status so the recorder knows the from-state of a transition
+- DEGRADED↔DOWN flapping inside an outage is folded into a single incident (peak severity tracked separately)
+- UNKNOWN status does not open an incident (treats it as a data gap, not an outage)
+- Partial index `idx_incidents_open` on `(service_name) WHERE ended_at IS NULL` keeps the open-incident query fast
+- New `pulseboard.dashboard.build_incident_table()` renders a Rich timeline table with live duration for open incidents
+- Wired into both `pulseboard watch` and `pulseboard dashboard` loops — no extra setup, just start the watcher
+- 53 new tests cover: reconstruction logic, peak-severity tracking, peak-error selection, multi-incident timelines, storage round-trip, UNKNOWN handling, open-only filtering, format_duration, summary aggregates, build_incident_table, and full CLI behavior (filters, JSON, summary, missing config, help)
 
 ### v0.8.0 — Email Notifications (SMTP) (2026-07-09)
 - New `email` channel type: SMTP delivery via stdlib `smtplib` (zero new dependencies)
@@ -346,8 +415,8 @@ pytest
 - [x] Configurable alert thresholds (latency, error rate)
 - [x] Export/import history (CSV, JSON)
 - [x] Notification channels (Slack, Discord, Telegram, email, generic webhook)
+- [x] Incident timeline view
 - [ ] Grafana/Prometheus metrics export
-- [ ] Incident timeline view
 - [ ] Web UI dashboard
 - [ ] Service groups and dependency tracking
 

@@ -46,6 +46,24 @@ class Storage:
 
             CREATE INDEX IF NOT EXISTS idx_checks_status
                 ON checks(status, timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                from_status TEXT NOT NULL,
+                to_status TEXT NOT NULL,
+                peak_status TEXT,
+                error TEXT,
+                UNIQUE(service_name, started_at)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_incidents_service_started
+                ON incidents(service_name, started_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_incidents_open
+                ON incidents(service_name) WHERE ended_at IS NULL;
         """)
 
     def store(self, result: CheckResult) -> None:
@@ -209,6 +227,196 @@ class Storage:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Incidents
+    # ------------------------------------------------------------------
+
+    def record_incident(
+        self,
+        *,
+        service_name: str,
+        started_at: datetime,
+        ended_at: datetime | None,
+        from_status: Status | str,
+        to_status: Status | str,
+        error: str | None = None,
+        peak_status: Status | str | None = None,
+    ) -> int:
+        """Insert a new incident row.
+
+        The (service_name, started_at) UNIQUE constraint means re-recording
+        the same incident is a silent no-op — useful when ``watch`` is
+        restarted mid-outage and replays the same alert.
+
+        Returns the row id of the inserted (or existing) incident.
+        """
+        from_s = from_status.value if isinstance(from_status, Status) else from_status
+        to_s = to_status.value if isinstance(to_status, Status) else to_status
+        peak_s = (
+            peak_status.value
+            if isinstance(peak_status, Status)
+            else peak_status
+        )
+        try:
+            cur = self.conn.execute(
+                """INSERT INTO incidents
+                       (service_name, started_at, ended_at, from_status,
+                        to_status, peak_status, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    service_name,
+                    started_at.isoformat(),
+                    ended_at.isoformat() if ended_at else None,
+                    from_s,
+                    to_s,
+                    peak_s,
+                    error,
+                ),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid)
+        except sqlite3.IntegrityError:
+            # Already recorded — return the existing row's id.
+            row = self.conn.execute(
+                """SELECT id FROM incidents
+                   WHERE service_name = ? AND started_at = ?""",
+                (service_name, started_at.isoformat()),
+            ).fetchone()
+            return int(row["id"]) if row else 0
+
+    def close_open_incident(
+        self,
+        *,
+        service_name: str,
+        ended_at: datetime,
+        peak_status: Status | str | None = None,
+    ) -> int:
+        """Close the oldest open incident for ``service_name``.
+
+        Returns the number of rows updated (0 or 1). Used by the
+        watcher when a service transitions back to UP.
+        """
+        peak_s = (
+            peak_status.value
+            if isinstance(peak_status, Status)
+            else peak_status
+        )
+        if peak_s is not None:
+            cur = self.conn.execute(
+                """UPDATE incidents
+                   SET ended_at = ?, peak_status = ?
+                   WHERE id = (
+                       SELECT id FROM incidents
+                       WHERE service_name = ? AND ended_at IS NULL
+                       ORDER BY started_at ASC LIMIT 1
+                   )""",
+                (ended_at.isoformat(), peak_s, service_name),
+            )
+        else:
+            cur = self.conn.execute(
+                """UPDATE incidents
+                   SET ended_at = ?
+                   WHERE id = (
+                       SELECT id FROM incidents
+                       WHERE service_name = ? AND ended_at IS NULL
+                       ORDER BY started_at ASC LIMIT 1
+                   )""",
+                (ended_at.isoformat(), service_name),
+            )
+        self.conn.commit()
+        return cur.rowcount
+
+    def get_incidents(
+        self,
+        service_name: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        types: set[Status] | None = None,
+        open_only: bool = False,
+        order: str = "desc",
+        limit: int | None = None,
+    ) -> list["Incident"]:
+        """Query stored incidents with optional filters.
+
+        Args:
+            service_name: If provided, only rows for that service.
+            since: Only incidents whose ``started_at`` >= this time (UTC).
+            until: Only incidents whose ``started_at`` <= this time (UTC).
+            types: If provided, only incidents whose ``peak_status`` (or
+                ``to_status`` if peak is unset) is in this set.
+            open_only: If True, only return incidents with ``ended_at IS NULL``.
+            order: ``"asc"`` (oldest first) or ``"desc"`` (newest first,
+                the default — the timeline view expects most-recent-first).
+            limit: If set, return at most this many rows after filtering.
+        """
+        from .incidents import Incident  # local import to avoid cycle
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if service_name is not None:
+            clauses.append("service_name = ?")
+            params.append(service_name)
+        if since is not None:
+            clauses.append("started_at >= ?")
+            params.append(since.isoformat())
+        if until is not None:
+            clauses.append("started_at <= ?")
+            params.append(until.isoformat())
+        if open_only:
+            clauses.append("ended_at IS NULL")
+        if types:
+            # Filter on peak_status if set, otherwise to_status.
+            placeholders = ",".join("?" for _ in types)
+            clauses.append(
+                f"COALESCE(peak_status, to_status) IN ({placeholders})"
+            )
+            params.extend(t.value if isinstance(t, Status) else t for t in types)
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        direction = "DESC" if order.lower() == "desc" else "ASC"
+        query = (
+            f"SELECT * FROM incidents {where} "
+            f"ORDER BY started_at {direction}"
+        )
+        if limit is not None:
+            query += f" LIMIT {int(limit)}"
+        rows = self.conn.execute(query, params).fetchall()
+        out: list[Incident] = []
+        for r in rows:
+            peak_raw = r["peak_status"]
+            to_raw = r["to_status"]
+            out.append(
+                Incident(
+                    service_name=r["service_name"],
+                    started_at=datetime.fromisoformat(r["started_at"]),
+                    ended_at=(
+                        datetime.fromisoformat(r["ended_at"])
+                        if r["ended_at"]
+                        else None
+                    ),
+                    from_status=Status(r["from_status"]),
+                    to_status=Status(to_raw),
+                    peak_status=Status(peak_raw) if peak_raw else None,
+                    error=r["error"],
+                    start_check_id=None,
+                    end_check_id=None,
+                )
+            )
+        return out
+
+    def prune_incidents(self, days: int = 90) -> int:
+        """Delete incidents older than ``days``. Returns count deleted.
+
+        Operates on ``started_at`` so that long-running incidents whose
+        ``ended_at`` is also in the past get cleaned up cleanly.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cur = self.conn.execute(
+            "DELETE FROM incidents WHERE started_at < ?", (cutoff,)
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def close(self) -> None:
         if self._conn:

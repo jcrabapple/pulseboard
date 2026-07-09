@@ -60,6 +60,15 @@ class AlertManager:
                 )
         return None
 
+    def previous_status(self, service_name: str) -> Status | None:
+        """Return the last status observed for a service (or None).
+
+        Exposed so callers can capture the prior status *before*
+        :meth:`evaluate` mutates internal state — used by the incident
+        recorder to know the ``from_status`` of a transition.
+        """
+        return self._previous_status.get(service_name)
+
     def reset(self) -> None:
         """Clear all tracked state."""
         self._previous_status.clear()

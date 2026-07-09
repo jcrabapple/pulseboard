@@ -127,6 +127,7 @@ def watch(config: str | None, once: bool) -> None:
 
             # Evaluate alerts
             for r in results:
+                prev = alerter.previous_status(r.service_name)
                 alert = alerter.evaluate(r)
                 if alert:
                     terminal_alert(alert)
@@ -134,6 +135,11 @@ def watch(config: str | None, once: bool) -> None:
                         (s for s in services if s.name == r.service_name), None
                     )
                     notifier.dispatch_sync(alert, svc)
+                # Persist incident timeline state (durable) regardless of
+                # whether an alert fires. The helper is a no-op when the
+                # service stays in the same state, so this is cheap.
+                from .incidents import _record_state_change
+                _record_state_change(storage, prev, r)
 
             # Print status line
             now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
@@ -209,6 +215,7 @@ def dashboard(config: str | None) -> None:
                 storage.store_many(results)
 
                 for r in results:
+                    prev = alerter.previous_status(r.service_name)
                     alert = alerter.evaluate(r)
                     if alert:
                         terminal_alert(alert)
@@ -216,6 +223,8 @@ def dashboard(config: str | None) -> None:
                             (s for s in services if s.name == r.service_name), None
                         )
                         notifier.dispatch_sync(alert, svc)
+                    from .incidents import _record_state_change
+                    _record_state_change(storage, prev, r)
 
                 # Get summaries and recent
                 summaries = storage.get_all_summaries(hours=24)
@@ -248,6 +257,127 @@ def prune(config: str | None, days: int) -> None:
     storage = Storage(settings["db_path"])
     deleted = storage.prune(days=days)
     console.print(f"[green]✓[/green] Pruned {deleted} records older than {days} days")
+    storage.close()
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option("--service", "-s", default=None,
+              help="Show only incidents for this service name.")
+@click.option("--hours", default=None, type=int,
+              help="Only show incidents that started in the last N hours.")
+@click.option("--from", "since_iso", default=None,
+              help="Only show incidents at or after this ISO timestamp (UTC).")
+@click.option("--to", "until_iso", default=None,
+              help="Only show incidents at or before this ISO timestamp (UTC).")
+@click.option("--type", "incident_type", default=None,
+              type=click.Choice(["down", "degraded", "all"], case_sensitive=False),
+              help="Filter by peak severity. Default: all.")
+@click.option("--open", "open_only", is_flag=True,
+              help="Show only incidents that are still ongoing.")
+@click.option("--limit", default=None, type=int,
+              help="Maximum number of incidents to show (most recent first).")
+@click.option("--summary", "summary_only", is_flag=True,
+              help="Show aggregate counts/durations instead of the per-incident list.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def incidents(
+    config: str | None,
+    service: str | None,
+    hours: int | None,
+    since_iso: str | None,
+    until_iso: str | None,
+    incident_type: str | None,
+    open_only: bool,
+    limit: int | None,
+    summary_only: bool,
+    as_json: bool,
+) -> None:
+    """Show the incident timeline (every state-change that wasn't UP→UP).
+
+    Incidents are recorded automatically by the ``watch`` and ``dashboard``
+    loops. If those haven't run yet (or you just imported a fresh database),
+    PulseBoard can also reconstruct incidents from the raw check history
+    by re-running the state-change detector.
+
+    Use ``--summary`` to get aggregate downtime / MTTR stats, or pass
+    ``--json`` for machine-readable output.
+    """
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    settings = get_settings(cfg)
+    storage = Storage(settings["db_path"])
+
+    since: datetime | None = None
+    until: datetime | None = None
+    if hours is not None:
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    if since_iso is not None:
+        since = datetime.fromisoformat(since_iso)
+    if until_iso is not None:
+        until = datetime.fromisoformat(until_iso)
+
+    types: set[Status] | None = None
+    if incident_type is not None and incident_type.lower() != "all":
+        types = {Status(incident_type.lower())}
+
+    results = storage.get_incidents(
+        service_name=service,
+        since=since,
+        until=until,
+        types=types,
+        open_only=open_only,
+        order="desc",
+        limit=limit,
+    )
+
+    if as_json:
+        from .incidents import summarize
+        payload: dict[str, object] = {
+            "incidents": [i.to_dict() for i in results],
+            "summary": summarize(results),
+        }
+        click.echo(json.dumps(payload, indent=2, default=str))
+    elif summary_only:
+        from .incidents import summarize as summarize_incidents
+        s = summarize_incidents(results)
+        console.print(f"[bold]Total:[/bold]      {s['total']}")
+        console.print(f"[bold]Open:[/bold]       {s['open']}")
+        console.print(f"[bold]Closed:[/bold]     {s['closed']}")
+        console.print(f"[bold]DOWN:[/bold]       {s['down']}")
+        console.print(f"[bold]DEGRADED:[/bold]   {s['degraded']}")
+        from .incidents import format_duration
+        console.print(
+            f"[bold]Total downtime:[/bold]  {format_duration(s['total_downtime_seconds'])}"
+        )
+        console.print(
+            f"[bold]Avg duration:[/bold]    {format_duration(s['average_duration_seconds'])}"
+        )
+        console.print(
+            f"[bold]Longest:[/bold]        {format_duration(s['longest_duration_seconds'])}"
+        )
+    else:
+        if not results:
+            console.print("[yellow]No incidents recorded in this window.[/yellow]")
+            console.print(
+                "Run [bold]pulseboard watch[/bold] (or [bold]pulseboard dashboard[/bold]) "
+                "to start tracking outages, or expand your time window with --hours."
+            )
+            storage.close()
+            sys.exit(0)
+        from .dashboard import build_incident_table
+        table = build_incident_table(results)
+        console.print(table)
+        from .incidents import summarize
+        s = summarize(results)
+        console.print(
+            f"\n[dim]{s['total']} incident(s) — {s['open']} open, "
+            f"{s['down']} DOWN, {s['degraded']} DEGRADED[/dim]"
+        )
+
     storage.close()
 
 

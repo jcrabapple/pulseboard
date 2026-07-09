@@ -286,3 +286,52 @@ def build_dns_table(results: list[CheckResult]) -> Table:
             notes,
         )
     return table
+
+
+def build_incident_table(incidents: list) -> Table:
+    """Render an incident-timeline table.
+
+    Each row shows: when the outage started, the service, the worst
+    severity, the duration, and a one-line error sample. Open incidents
+    show a live duration (since ``started_at``) and are marked with a
+    pulsing [yellow]●[/yellow].
+    """
+    from datetime import datetime, timezone
+    from .incidents import format_duration
+
+    table = Table(
+        title="⚡ PulseBoard — Incident Timeline",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Started", width=19, style="dim")
+    table.add_column("Service", style="bold", min_width=16)
+    table.add_column("Severity", width=9, justify="center")
+    table.add_column("Duration", justify="right", width=10)
+    table.add_column("Error", max_width=60)
+
+    now = datetime.now(timezone.utc)
+
+    for inc in sorted(incidents, key=lambda i: i.started_at, reverse=True):
+        sev = inc.severity
+        sev_label = (
+            Text(status_emoji(sev) + " " + sev.value.upper(), style=status_style(sev))
+        )
+        if inc.is_open:
+            live = (now - inc.started_at).total_seconds()
+            duration_str = format_duration(live) + " [yellow]●[/yellow]"
+        else:
+            duration_str = format_duration(inc.duration_seconds)
+        err = inc.error or ""
+        if len(err) > 80:
+            err = err[:77] + "..."
+        table.add_row(
+            inc.started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            inc.service_name,
+            sev_label,
+            duration_str,
+            err or "[dim]—[/dim]",
+        )
+    return table
