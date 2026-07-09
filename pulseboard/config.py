@@ -111,6 +111,16 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 f"Service '{sname}': error_rate_window must be >= 1"
             )
 
+        # alert_channels must be a list of strings; reject other shapes
+        # loudly so the user doesn't discover the typo on the first alert.
+        ac_raw = entry.get("alert_channels", [])
+        if not isinstance(ac_raw, list) or not all(
+            isinstance(x, str) for x in ac_raw
+        ):
+            raise ConfigError(
+                f"Service '{sname}': alert_channels must be a list of strings"
+            )
+
         svc = ServiceConfig(
             name=entry["name"],
             url=entry.get("url", ""),
@@ -121,6 +131,7 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             headers=entry.get("headers", {}),
             tags=entry.get("tags", []),
             alert_webhook=entry.get("alert_webhook"),
+            alert_channels=list(ac_raw),
             host=entry.get("host"),
             port=entry.get("port"),
             ssl_expiry_warning_days=entry.get("ssl_expiry_warning_days", 14),
@@ -172,6 +183,7 @@ def get_settings(raw: dict[str, Any]) -> dict[str, Any]:
         "alert_on_recovery": True,
         "dashboard_refresh": 5,
         "history_days": 30,
+        "notification_channels": [],
     }
     defaults.update(raw.get("settings", {}))
     return defaults
@@ -271,6 +283,26 @@ services:
     error_rate_warning_pct: 10     # >= 10% failures -> DEGRADED
     error_rate_critical_pct: 50    # >= 50% failures -> DOWN
     tags: [slo, error-rate]
+
+  # Notification channels (uncomment to enable). Channels are defined once
+  # under settings and routed per-service via ``alert_channels:``. Without
+  # that override, every channel fires for every service.
+  #
+  # settings:
+  #   notification_channels:
+  #     - name: ops-slack
+  #       type: slack
+  #       webhook_url: https://hooks.slack.com/services/T0/B0/XXX
+  #     - name: oncall-discord
+  #       type: discord
+  #       webhook_url: https://discord.com/api/webhooks/1/abc
+  #     - name: oncall-telegram
+  #       type: telegram
+  #       telegram_token: "123456:abcdef"
+  #       telegram_chat_id: "-1001234567890"
+  #
+  # Run ``pulseboard notify-test`` to verify a channel config without
+  # waiting for a real outage.
 """
 
 

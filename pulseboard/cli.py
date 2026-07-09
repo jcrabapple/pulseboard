@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,7 +14,8 @@ from rich.console import Console
 from rich.live import Live
 
 from . import __version__
-from .alerting import AlertManager, terminal_alert, send_webhook_alert
+from .alerting import Alert, AlertManager, AlertType, terminal_alert
+from .notifications import NotificationDispatcher
 from .config import (
     DEFAULT_CONFIG_PATH,
     EXAMPLE_CONFIG,
@@ -103,6 +105,9 @@ def watch(config: str | None, once: bool) -> None:
     services = parse_services(cfg)
     storage = Storage(settings["db_path"])
     alerter = AlertManager(alert_on_recovery=settings.get("alert_on_recovery", True))
+    notifier = NotificationDispatcher.from_config(
+        settings.get("notification_channels", [])
+    )
 
     console.print(f"[bold cyan]⚡ PulseBoard[/bold cyan] monitoring {len(services)} services (Ctrl+C to stop)\n")
 
@@ -125,9 +130,10 @@ def watch(config: str | None, once: bool) -> None:
                 alert = alerter.evaluate(r)
                 if alert:
                     terminal_alert(alert)
-                    svc = next((s for s in services if s.name == r.service_name), None)
-                    if svc and svc.alert_webhook:
-                        asyncio.run(send_webhook_alert(svc.alert_webhook, alert))
+                    svc = next(
+                        (s for s in services if s.name == r.service_name), None
+                    )
+                    notifier.dispatch_sync(alert, svc)
 
             # Print status line
             now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
@@ -183,6 +189,9 @@ def dashboard(config: str | None) -> None:
     services = parse_services(cfg)
     storage = Storage(settings["db_path"])
     alerter = AlertManager(alert_on_recovery=settings.get("alert_on_recovery", True))
+    notifier = NotificationDispatcher.from_config(
+        settings.get("notification_channels", [])
+    )
     refresh = settings.get("dashboard_refresh", 5)
 
     console.print("[bold cyan]⚡ PulseBoard Dashboard[/bold cyan] (Ctrl+C to exit)\n")
@@ -203,6 +212,10 @@ def dashboard(config: str | None) -> None:
                     alert = alerter.evaluate(r)
                     if alert:
                         terminal_alert(alert)
+                        svc = next(
+                            (s for s in services if s.name == r.service_name), None
+                        )
+                        notifier.dispatch_sync(alert, svc)
 
                 # Get summaries and recent
                 summaries = storage.get_all_summaries(hours=24)
@@ -442,6 +455,190 @@ def config_path() -> None:
         console.print(f"[green]{path}[/green]")
     except FileNotFoundError:
         console.print(f"[dim]No config found. Default location: {DEFAULT_CONFIG_PATH}[/dim]")
+
+
+def _build_test_alert(service_name: str) -> Alert:
+    """Construct a synthetic DOWN alert for notify-test."""
+    from .models import CheckResult, Status
+    from datetime import datetime, timezone
+
+    result = CheckResult(
+        service_name=service_name,
+        timestamp=datetime.now(timezone.utc),
+        status=Status.DOWN,
+        latency_ms=0.0,
+        error="This is a PulseBoard test alert — your channels are configured correctly.",
+    )
+    return Alert(
+        service_name=service_name,
+        alert_type=AlertType.DOWN,
+        result=result,
+        message=f"🔴 {service_name} is DOWN (test alert)",
+    )
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option(
+    "--service",
+    "-s",
+    default="PulseBoard Test",
+    help="Service name to use in the synthetic test alert.",
+)
+@click.option(
+    "--channel",
+    "channel_name",
+    default=None,
+    help="Send to this channel only (by name). Default: all configured channels.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def notify_test(
+    config: str | None,
+    service: str,
+    channel_name: str | None,
+    as_json: bool,
+) -> None:
+    """Send a synthetic alert through every configured notification channel.
+
+    Useful for verifying webhook URLs, Telegram bot tokens, and Discord
+    channel routing after editing the config -- without having to wait
+    for an actual outage.
+    """
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    settings = get_settings(cfg)
+    try:
+        notifier = NotificationDispatcher.from_config(
+            settings.get("notification_channels", [])
+        )
+    except ValueError as e:
+        console.print(f"[red]✗[/red] Invalid notification_channels config: {e}")
+        sys.exit(1)
+
+    if not notifier.channels:
+        console.print(
+            "[yellow]No notification channels configured.[/yellow]\n"
+            "Add a 'notification_channels:' block under 'settings:' in your "
+            "config (see README 'Notification Channels' section)."
+        )
+        sys.exit(1)
+
+    if channel_name is not None:
+        if channel_name not in notifier._by_name:
+            console.print(
+                f"[red]✗[/red] No channel named '{channel_name}'. "
+                f"Known: {', '.join(notifier._by_name) or '(none)'}"
+            )
+            sys.exit(1)
+        notifier.channels = [notifier._by_name[channel_name]]
+
+    alert = _build_test_alert(service)
+    console.print(
+        f"[dim]Sending test alert to {len(notifier.channels)} channel(s)...[/dim]"
+    )
+    results = notifier.dispatch_sync(alert)
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                [r.to_dict() for r in results],
+                indent=2,
+            )
+        )
+    else:
+        from rich.table import Table
+
+        table = Table(title="Notify Test Results", show_lines=False)
+        table.add_column("Channel", style="bold")
+        table.add_column("Type")
+        table.add_column("Status", justify="center")
+        table.add_column("HTTP")
+        table.add_column("Detail")
+        for r in results:
+            status = (
+                "[green]OK[/green]"
+                if r.success
+                else f"[red]FAIL[/red]"
+            )
+            detail = r.error or ""
+            if len(detail) > 60:
+                detail = detail[:57] + "..."
+            table.add_row(
+                r.channel.name,
+                r.channel.channel_type.value,
+                status,
+                str(r.status_code) if r.status_code is not None else "-",
+                detail,
+            )
+        console.print(table)
+
+    failed = [r for r in results if not r.success]
+    if failed:
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def notify_list(config: str | None, as_json: bool) -> None:
+    """List configured notification channels."""
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    settings = get_settings(cfg)
+    try:
+        notifier = NotificationDispatcher.from_config(
+            settings.get("notification_channels", [])
+        )
+    except ValueError as e:
+        console.print(f"[red]✗[/red] Invalid notification_channels config: {e}")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                [
+                    {
+                        "name": c.name,
+                        "type": c.channel_type.value,
+                        "webhook_url_set": bool(c.webhook_url),
+                        "telegram_token_set": bool(c.telegram_token),
+                        "telegram_chat_id": c.telegram_chat_id,
+                    }
+                    for c in notifier.channels
+                ],
+                indent=2,
+            )
+        )
+    else:
+        from rich.table import Table
+
+        if not notifier.channels:
+            console.print("[yellow]No notification channels configured.[/yellow]")
+            return
+        table = Table(title="Notification Channels")
+        table.add_column("Name", style="bold")
+        table.add_column("Type")
+        table.add_column("Target")
+        for c in notifier.channels:
+            if c.channel_type.value == "telegram":
+                target = f"chat {c.telegram_chat_id}"
+            else:
+                # Mask the webhook URL so secrets don't leak into shell scrollback.
+                target = c.webhook_url or ""
+                if "://" in target:
+                    scheme, rest = target.split("://", 1)
+                    if len(rest) > 24:
+                        target = f"{scheme}://{rest[:8]}…{rest[-6:]}"
+            table.add_row(c.name, c.channel_type.value, target)
+        console.print(table)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 - **CSV/JSON export** — pipe-friendly history export with rich filters
 - **Live TUI dashboard** — Rich-powered terminal UI with latency bars, P95/P99 stats
 - **Alerting** — webhook notifications + terminal bell on status changes
+- **Notification channels** — Slack, Discord, Telegram, and generic JSON webhooks
 - **YAML config** — simple, human-readable service definitions
 - **Percentile latency** — P95, P99, min, max tracked per service
 - **Auto-pruning** — configurable history retention
@@ -188,8 +189,45 @@ A DOWN status from the underlying check is never upgraded by thresholds.
 | `pulseboard dns` | Run DNS queries for configured services |
 | `pulseboard validate` | Run HTTP checks and report body content validation |
 | `pulseboard export` | Export stored check history to CSV or JSON |
+| `pulseboard notify-test` | Send a synthetic alert through every configured notification channel |
+| `pulseboard notify-list` | List configured notification channels |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
+
+## Notification Channels
+
+PulseBoard can fan alerts out to multiple backends in parallel. Define channels
+under `settings.notification_channels` in your config; each service can opt
+into a subset of those channels via `alert_channels:`, or fall back to the
+global set if it has none.
+
+```yaml
+settings:
+  notification_channels:
+    - name: ops-slack
+      type: slack
+      webhook_url: https://hooks.slack.com/services/T0/B0/XXX
+    - name: oncall-discord
+      type: discord
+      webhook_url: https://discord.com/api/webhooks/1/abc
+    - name: oncall-tg
+      type: telegram
+      telegram_token: "123456:abcdef"
+      telegram_chat_id: "-1001234567890"
+    - name: pager-webhook
+      type: webhook
+      webhook_url: https://pagerduty.example/incoming/abc
+
+services:
+  - name: api
+    url: https://api.example.com/health
+    alert_channels: [ops-slack, pager-webhook]   # this service only uses 2
+  - name: blog
+    url: https://blog.example.com                 # no override → all 4 channels fire
+```
+
+Verify your setup with `pulseboard notify-test` (sends a synthetic DOWN
+alert) and inspect what's wired up with `pulseboard notify-list`.
 
 ## Development
 
@@ -199,6 +237,16 @@ pytest
 ```
 
 ## Changelog
+
+### v0.7.0 — Notification Channels (2026-07-09)
+- New `pulseboard.notifications` module with `NotificationDispatcher` for fan-out to multiple channels in parallel
+- New channel types: Slack (attachments + color), Discord (embeds + fields), Telegram (Bot API + Markdown), and generic JSON webhook
+- New `ChannelType` enum and `NotificationChannel` dataclass in `pulseboard.models` with up-front validation
+- Per-service `alert_channels:` list routes alerts for a service to a subset of the global channels
+- Legacy `alert_webhook` field continues to work — a webhook channel is synthesized on the fly
+- New `pulseboard notify-test` command sends a synthetic alert through all (or one) channels, with rich table and JSON output
+- New `pulseboard notify-list` command shows configured channels (webhook URLs masked in human output)
+- 36 notification tests cover payload renderers, dispatcher routing, async dispatch, and error handling (no live network — uses `httpx.MockTransport`)
 
 ### v0.6.0 — Latency & Error-Rate Thresholds (2026-07-09)
 - Per-service thresholds: `latency_warning_ms`, `latency_critical_ms`, `error_rate_warning_pct`, `error_rate_critical_pct`
@@ -262,10 +310,11 @@ pytest
 - [x] Response body content validation (regex/JSON path)
 - [x] Configurable alert thresholds (latency, error rate)
 - [x] Export/import history (CSV, JSON)
+- [x] Notification channels (Slack, Discord, Telegram, generic webhook)
+- [ ] Email notifications (SMTP)
 - [ ] Grafana/Prometheus metrics export
 - [ ] Incident timeline view
 - [ ] Web UI dashboard
-- [ ] Notification channels (Telegram, Discord, Slack, email)
 - [ ] Service groups and dependency tracking
 
 ## License

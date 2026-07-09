@@ -27,6 +27,90 @@ class Status(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ChannelType(str, Enum):
+    """Supported notification channel backends."""
+
+    SLACK = "slack"
+    DISCORD = "discord"
+    TELEGRAM = "telegram"
+    WEBHOOK = "webhook"  # generic JSON POST (the original alert_webhook)
+
+
+# Status colors in the same 0xRRGGBB hex format that Discord embeds and
+# Slack attachments both accept. Kept here so the channels module can pick
+# one canonical palette without duplicating literals.
+STATUS_COLOR = {
+    Status.UP: 0x2ECC71,        # green
+    Status.DOWN: 0xE74C3C,      # red
+    Status.DEGRADED: 0xF1C40F,  # amber
+    Status.UNKNOWN: 0x95A5A6,   # grey
+}
+
+STATUS_EMOJI = {
+    Status.UP: "🟢",
+    Status.DOWN: "🔴",
+    Status.DEGRADED: "🟡",
+    Status.UNKNOWN: "⚪",
+}
+
+
+@dataclass
+class NotificationChannel:
+    """A single outbound notification destination.
+
+    The fields here are intentionally minimal: only ``channel_type`` and
+    whatever target credentials the chosen backend needs. The
+    :mod:`pulseboard.notifications` dispatcher decides what payload to
+    send based on the channel type.
+    """
+
+    name: str  # human-friendly label, e.g. "team-alerts" or "ops-room"
+    channel_type: ChannelType
+    # Slack/Discord/webhook: incoming-webhook URL.
+    webhook_url: str | None = None
+    # Telegram: bot token (without the "bot" prefix).
+    telegram_token: str | None = None
+    # Telegram: numeric chat_id or @channelname to post to.
+    telegram_chat_id: str | None = None
+    # Free-form options bag for future expansion (e.g. message_thread_id).
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Normalize string channel types to the enum so callers can pass
+        # either.
+        if isinstance(self.channel_type, str):
+            self.channel_type = ChannelType(self.channel_type.lower())
+
+    def validate(self) -> None:
+        """Raise :class:`ValueError` if the channel is missing required fields.
+
+        Called at config-load time so users get a clean error instead of
+        a runtime POST failure on the first alert.
+        """
+        if self.channel_type in (ChannelType.SLACK, ChannelType.DISCORD, ChannelType.WEBHOOK):
+            if not self.webhook_url:
+                raise ValueError(
+                    f"Notification channel '{self.name}' ({self.channel_type.value}) "
+                    "requires 'webhook_url'"
+                )
+            if not self.webhook_url.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"Notification channel '{self.name}': webhook_url must "
+                    "start with http:// or https://"
+                )
+        elif self.channel_type == ChannelType.TELEGRAM:
+            if not self.telegram_token:
+                raise ValueError(
+                    f"Notification channel '{self.name}' (telegram) requires "
+                    "'telegram_token'"
+                )
+            if not self.telegram_chat_id:
+                raise ValueError(
+                    f"Notification channel '{self.name}' (telegram) requires "
+                    "'telegram_chat_id'"
+                )
+
+
 @dataclass
 class ServiceConfig:
     """A monitored service/endpoint."""
@@ -40,6 +124,10 @@ class ServiceConfig:
     headers: dict[str, str] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     alert_webhook: str | None = None
+    # Optional list of NotificationChannel names (looked up in the global
+    # settings.notification_channels registry) that should receive alerts
+    # for THIS service. If empty, the global default channels apply.
+    alert_channels: list[str] = field(default_factory=list)
     # For TCP / SSL checks
     host: str | None = None
     port: int | None = None
