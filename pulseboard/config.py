@@ -7,7 +7,11 @@ from typing import Any
 
 import yaml
 
-from .models import ServiceConfig, ServiceType
+from .models import DNS_RECORD_TYPES, ServiceConfig, ServiceType
+
+
+class ConfigError(ValueError):
+    """Raised when the config file contains invalid values."""
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pulseboard" / "config.yaml"
 LEGACY_CONFIG_PATH = Path("pulseboard.yaml")
@@ -39,10 +43,30 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
-    """Parse service definitions from config dict."""
-    services = []
+    """Parse service definitions from config dict.
+
+    Raises :class:`ConfigError` when mandatory fields for a service type are
+    missing or contain invalid values.
+    """
+    services: list[ServiceConfig] = []
     for entry in raw.get("services", []):
         stype = ServiceType(entry.get("type", "http"))
+
+        # DNS-specific validation
+        if stype == ServiceType.DNS:
+            dns_rdtype = entry.get("dns_record_type", "A").upper()
+            if dns_rdtype not in DNS_RECORD_TYPES:
+                raise ConfigError(
+                    f"Service '{entry.get('name')}': unsupported dns_record_type "
+                    f"'{dns_rdtype}'. Supported: {', '.join(DNS_RECORD_TYPES)}"
+                )
+            dns_match_mode = entry.get("dns_match_mode", "any").lower()
+            if dns_match_mode not in {"any", "all", "exact"}:
+                raise ConfigError(
+                    f"Service '{entry.get('name')}': dns_match_mode must be "
+                    f"'any', 'all', or 'exact', not '{dns_match_mode}'"
+                )
+
         svc = ServiceConfig(
             name=entry["name"],
             url=entry.get("url", ""),
@@ -57,6 +81,10 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             port=entry.get("port"),
             ssl_expiry_warning_days=entry.get("ssl_expiry_warning_days", 14),
             ssl_sni=entry.get("ssl_sni"),
+            dns_record_type=entry.get("dns_record_type", "A").upper(),
+            dns_server=entry.get("dns_server"),
+            dns_expected=entry.get("dns_expected"),
+            dns_match_mode=entry.get("dns_match_mode", "any").lower(),
         )
         services.append(svc)
     return services
@@ -116,6 +144,23 @@ services:
     url: https://github.com
     interval: 86400  # check once a day
     ssl_expiry_warning_days: 30  # alert when cert is within 30 days of expiry
+
+  # DNS monitoring
+  - name: GitHub DNS
+    type: dns
+    host: github.com
+    interval: 300
+    dns_record_type: A
+    dns_expected: ["140.82.121.3"]  # optional: verify specific answers
+    dns_match_mode: any              # any | all | exact
+    tags: [dns, web]
+
+  - name: My Mail MX
+    type: dns
+    host: example.com
+    dns_record_type: MX
+    interval: 600
+    tags: [dns, mail]
 """
 
 

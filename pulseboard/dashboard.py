@@ -206,3 +206,45 @@ def build_cert_table(results: list[CheckResult]) -> Table:
             days_str,
         )
     return table
+
+
+def build_dns_table(results: list[CheckResult]) -> Table:
+    """Build a DNS query results table."""
+    table = Table(
+        title="🌐 DNS Status",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Status", width=6, justify="center")
+    table.add_column("Service", style="bold", min_width=16)
+    table.add_column("Query", min_width=20)
+    table.add_column("Type", width=6, justify="center")
+    table.add_column("Answers", min_width=30)
+    table.add_column("Latency", justify="right", width=10)
+    table.add_column("Notes", max_width=40)
+
+    for r in sorted(results, key=lambda x: x.status != Status.UP):
+        query = r.details.get("query", "?")
+        rdtype = r.details.get("record_type", "?")
+        answers = r.details.get("answers", [])
+        if len(answers) <= 3:
+            answer_str = ", ".join(answers) if answers else "[dim]—[/dim]"
+        else:
+            answer_str = f"{answers[0]}, {answers[1]}, … ({len(answers)} records)"
+        if len(answer_str) > 50:
+            answer_str = answer_str[:47] + "..."
+
+        notes = r.error or ""
+
+        table.add_row(
+            Text(status_emoji(r.status), style=status_style(r.status)),
+            r.service_name,
+            query,
+            rdtype,
+            answer_str,
+            f"{r.latency_ms:.0f}ms",
+            notes,
+        )
+    return table

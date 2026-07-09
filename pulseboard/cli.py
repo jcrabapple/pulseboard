@@ -25,6 +25,7 @@ from .config import (
 )
 from .dashboard import (
     build_cert_table,
+    build_dns_table,
     build_overview_table,
     console,
     print_status_line,
@@ -259,6 +260,38 @@ def certs(config: str | None, days: int | None, as_json: bool) -> None:
         console.print(table)
         bad = [r for r in results if r.status != Status.UP]
         if bad:
+            sys.exit(1)
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def dns(config: str | None, as_json: bool) -> None:
+    """Run DNS queries for configured DNS services."""
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    services = parse_services(cfg)
+    dns_services = [s for s in services if s.service_type == ServiceType.DNS]
+    if not dns_services:
+        console.print("[yellow]No DNS services configured.[/yellow]")
+        console.print("Add a service with [bold]type: dns[/bold] to your config.")
+        sys.exit(0)
+
+    results = asyncio.run(run_all_checks(dns_services))
+
+    if as_json:
+        import json
+        click.echo(json.dumps([r.to_dict() for r in results], indent=2, default=str))
+    else:
+        table = build_dns_table(results)
+        console.print(table)
+        bad = [r for r in results if r.status != Status.UP]
+        if bad:
+            console.print(f"\n[red]{len(bad)} DNS service(s) failing[/red]")
             sys.exit(1)
 
 

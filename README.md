@@ -107,6 +107,7 @@ services:
 | `pulseboard dashboard` | Full TUI dashboard |
 | `pulseboard status` | Status summary from history |
 | `pulseboard certs` | Check SSL certificate expiry |
+| `pulseboard dns` | Run DNS queries for configured services |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
 
@@ -118,6 +119,17 @@ pytest
 ```
 
 ## Changelog
+
+### v0.3.0 — DNS Monitoring (2026-07-09)
+- New `dns` service type for DNS record resolution monitoring
+- `pulseboard dns` command with rich table + JSON output
+- Supports record types: A, AAAA, CNAME, MX, NS, TXT, SRV, CAA, PTR
+- Expected-answer validation with three match modes: `any`, `all`, `exact`
+- Optional `dns_server` override (custom nameserver)
+- Status semantics: UP (resolves) / DEGRADED (partial expected match) / DOWN (failure or mismatch)
+- Per-service `timeout` control for DNS queries
+- Config validation: unsupported record types and match modes caught at load time
+- Added `dnspython>=2.6` dependency
 
 ### v0.2.0 — SSL Certificate Monitoring (2026-07-09)
 - New `ssl` service type for certificate expiry monitoring
@@ -140,7 +152,7 @@ pytest
 ## Roadmap
 
 - [x] SSL certificate expiry checks
-- [ ] DNS monitoring
+- [x] DNS monitoring
 - [ ] Grafana/Prometheus metrics export
 - [ ] Response body content validation (regex/JSON path)
 - [ ] Incident timeline view

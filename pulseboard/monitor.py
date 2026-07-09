@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from .models import CheckResult, ServiceConfig, ServiceType, Status
+from .dns_check import check_dns
 from .ssl_check import check_ssl
 
 
@@ -122,6 +123,8 @@ async def run_check(service: ServiceConfig) -> CheckResult:
         return await check_tcp(service)
     if service.service_type == ServiceType.SSL:
         return await check_ssl(service)
+    if service.service_type == ServiceType.DNS:
+        return await check_dns(service)
     return await check_http(service)
 
 
