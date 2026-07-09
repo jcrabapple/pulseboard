@@ -57,6 +57,24 @@ class ServiceConfig:
     body_regex: str | None = None  # regex that must match somewhere in the body
     json_path: str | None = None  # dot path like "data.status" or "user.id"
     json_path_expected: str | None = None  # if set, json_path value must equal this literal
+    # Latency & error-rate thresholds (optional — all None = no threshold check)
+    latency_warning_ms: float | None = None  # latency above this -> downgrade to DEGRADED
+    latency_critical_ms: float | None = None  # latency above this -> downgrade to DOWN
+    error_rate_window: int = 50  # rolling window of recent checks for error-rate calculation
+    error_rate_warning_pct: float | None = None  # 0-100; failures above this -> DEGRADED
+    error_rate_critical_pct: float | None = None  # 0-100; failures above this -> DOWN
+
+    def has_latency_thresholds(self) -> bool:
+        return self.latency_warning_ms is not None or self.latency_critical_ms is not None
+
+    def has_error_rate_thresholds(self) -> bool:
+        return (
+            self.error_rate_warning_pct is not None
+            or self.error_rate_critical_pct is not None
+        )
+
+    def has_any_threshold(self) -> bool:
+        return self.has_latency_thresholds() or self.has_error_rate_thresholds()
 
 
 @dataclass
@@ -76,6 +94,21 @@ class CheckResult:
         return self.status == Status.UP
 
     def to_dict(self) -> dict[str, Any]:
+        return {
+            "service_name": self.service_name,
+            "timestamp": self.timestamp.isoformat(),
+            "status": self.status.value,
+            "latency_ms": round(self.latency_ms, 2),
+            "status_code": self.status_code,
+            "error": self.error,
+        }
+
+    def to_export_row(self) -> dict[str, Any]:
+        """Serialize for CSV/JSON export — flat, predictable keys.
+
+        Unlike :meth:`to_dict` (which is a compact UI representation), this
+        includes every column we want available in an analytics export.
+        """
         return {
             "service_name": self.service_name,
             "timestamp": self.timestamp.isoformat(),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
@@ -32,10 +32,11 @@ from .dashboard import (
     print_status_line,
     render_dashboard,
 )
-from .monitor import run_all_checks, run_check
+from .monitor import run_all_checks, run_all_checks_with_thresholds, run_check
 from .models import ServiceType, Status
 from .storage import Storage
 from .content_check import has_content_checks
+from .export import infer_format, write_export, write_export_stream
 
 
 @click.group()
@@ -107,7 +108,16 @@ def watch(config: str | None, once: bool) -> None:
 
     try:
         while True:
-            results = asyncio.run(run_all_checks(services))
+            # History provider for error-rate thresholds — exclude the
+            # in-flight batch so we don't double-count.
+            def history_provider(
+                name: str, _pending: list[str] | None = None
+            ) -> list[CheckResult]:
+                return storage.get_recent(name, limit=200)
+
+            results = asyncio.run(
+                run_all_checks_with_thresholds(services, history_provider)
+            )
             storage.store_many(results)
 
             # Evaluate alerts
@@ -181,7 +191,12 @@ def dashboard(config: str | None) -> None:
         with Live(render_dashboard([], []), refresh_per_second=1, console=console) as live:
             while True:
                 # Run checks
-                results = asyncio.run(run_all_checks(services))
+                def history_provider(name: str) -> list[CheckResult]:
+                    return storage.get_recent(name, limit=200)
+
+                results = asyncio.run(
+                    run_all_checks_with_thresholds(services, history_provider)
+                )
                 storage.store_many(results)
 
                 for r in results:
@@ -336,6 +351,87 @@ def validate(config: str | None, as_json: bool) -> None:
         if bad:
             console.print(f"\n[red]{len(bad)} service(s) failing content validation[/red]")
             sys.exit(1)
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option("--output", "-o", type=click.Path(), default=None,
+              help="Output file path. Defaults to stdout. Extension determines format.")
+@click.option("--format", "fmt", type=click.Choice(["csv", "json"], case_sensitive=False),
+              default=None, help="Output format. Defaults to file extension, or csv if piped to stdout.")
+@click.option("--service", "-s", default=None,
+              help="Export only checks for this service name.")
+@click.option("--hours", "hours", default=None, type=int,
+              help="Only export checks from the last N hours.")
+@click.option("--from", "since_iso", default=None,
+              help="Only export checks at or after this ISO timestamp (UTC).")
+@click.option("--to", "until_iso", default=None,
+              help="Only export checks at or before this ISO timestamp (UTC).")
+@click.option("--limit", "limit", default=None, type=int,
+              help="Maximum number of records to export (most recent first when set).")
+def export(
+    config: str | None,
+    output: str | None,
+    fmt: str | None,
+    service: str | None,
+    hours: int | None,
+    since_iso: str | None,
+    until_iso: str | None,
+    limit: int | None,
+) -> None:
+    """Export stored check history to CSV or JSON.
+
+    Defaults to writing to stdout in CSV format (handy for piping into
+    ``awk``, ``column``, or redirecting to a file). When ``--output`` is
+    provided, the file extension decides the format unless ``--format`` is
+    explicit.
+    """
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    settings = get_settings(cfg)
+    storage = Storage(settings["db_path"])
+
+    # Resolve filters
+    since: datetime | None = None
+    until: datetime | None = None
+    if hours is not None:
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    if since_iso is not None:
+        since = datetime.fromisoformat(since_iso)
+    if until_iso is not None:
+        until = datetime.fromisoformat(until_iso)
+
+    order = "desc" if limit is not None else "asc"
+    results = storage.get_history(
+        service_name=service,
+        since=since,
+        until=until,
+        order=order,
+    )
+    if limit is not None:
+        results = results[:limit]
+
+    # Resolve format & destination
+    if fmt is None:
+        if output is not None:
+            fmt = infer_format(output)
+        else:
+            fmt = "csv"
+    fmt = fmt.lower()
+
+    if output:
+        count = write_export(results, output, fmt)
+        console.print(
+            f"[green]✓[/green] Exported {count} check record(s) to {output}"
+        )
+    else:
+        count = write_export_stream(results, sys.stdout, fmt)
+
+    storage.close()
 
 
 @cli.command()

@@ -19,7 +19,9 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 - **SSL certificate expiry monitoring** — track cert validity with configurable warning window
 - **DNS monitoring** — resolve any record type (A, AAAA, MX, TXT, …) with optional answer validation
 - **HTTP body content validation** — substring, regex, and JSON-path checks on response bodies
-- **SQLite history** — every check stored, queryable, prunable
+- **Latency & error-rate thresholds** — per-service SLOs that downgrade UP→DEGRADED or UP→DOWN
+- **SQLite history** — every check stored, queryable, prunable, and exportable
+- **CSV/JSON export** — pipe-friendly history export with rich filters
 - **Live TUI dashboard** — Rich-powered terminal UI with latency bars, P95/P99 stats
 - **Alerting** — webhook notifications + terminal bell on status changes
 - **YAML config** — simple, human-readable service definitions
@@ -54,17 +56,23 @@ pulseboard dashboard
 # 6. View status from history
 pulseboard status --hours 24
 
-# 7. Prune old records
+# 8. Prune old records
 pulseboard prune --days 30
 
-# 8. Check SSL certificate expiry for SSL services
+# 9. Check SSL certificate expiry for SSL services
 pulseboard certs                    # all SSL services
 pulseboard certs --days 30          # only show certs expiring within 30 days
 pulseboard certs --json             # JSON output
 
-# 9. Validate HTTP response bodies (substr/regex/jsonpath)
+# 10. Validate HTTP response bodies (substr/regex/jsonpath)
 pulseboard validate
 pulseboard validate --json
+
+# 11. Export check history (defaults to CSV on stdout)
+pulseboard export
+pulseboard export -o history.csv
+pulseboard export -o history.json
+pulseboard export -s "GitHub" --hours 24
 ```
 
 ## Configuration
@@ -132,6 +140,41 @@ DEGRADED — the HTTP request succeeded, but the body indicates a problem
 Use the `pulseboard validate` command to run only the HTTP services that
 have content checks configured.
 
+### Latency & Error-Rate Thresholds
+
+Sometimes the HTTP request returns 200 and the body is fine, but the
+service is *still* unhealthy — it's slow, or it's been flaking out for
+the last hour. Per-service thresholds let you capture that.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `latency_warning_ms` | number | When current latency ≥ this, downgrade UP → DEGRADED |
+| `latency_critical_ms` | number | When current latency ≥ this, downgrade UP → DOWN |
+| `error_rate_window` | int | How many recent checks to use for the error-rate check (default 50) |
+| `error_rate_warning_pct` | number (0-100) | When the failure rate in the window ≥ this, downgrade UP → DEGRADED |
+| `error_rate_critical_pct` | number (0-100) | When the failure rate in the window ≥ this, downgrade UP → DOWN |
+
+```yaml
+- name: Slow API
+  url: https://api.example.com/health
+  interval: 60
+  latency_warning_ms: 500
+  latency_critical_ms: 2000
+
+- name: Flaky Service
+  url: https://flaky.example.com
+  interval: 30
+  error_rate_window: 50
+  error_rate_warning_pct: 10
+  error_rate_critical_pct: 50
+```
+
+Thresholds are applied by the `watch` and `dashboard` loops after each
+check. The structured outcome (which threshold fired, the measured error
+rate, the sample size) is attached to `CheckResult.details["thresholds"]`
+so dashboards, alerts, and exports can surface *why* a status changed.
+A DOWN status from the underlying check is never upgraded by thresholds.
+
 ## Commands
 
 | Command | Description |
@@ -144,6 +187,7 @@ have content checks configured.
 | `pulseboard certs` | Check SSL certificate expiry |
 | `pulseboard dns` | Run DNS queries for configured services |
 | `pulseboard validate` | Run HTTP checks and report body content validation |
+| `pulseboard export` | Export stored check history to CSV or JSON |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
 
@@ -155,6 +199,23 @@ pytest
 ```
 
 ## Changelog
+
+### v0.6.0 — Latency & Error-Rate Thresholds (2026-07-09)
+- Per-service thresholds: `latency_warning_ms`, `latency_critical_ms`, `error_rate_warning_pct`, `error_rate_critical_pct`
+- New `pulseboard.thresholds` module with `evaluate_thresholds()` and `compute_error_rate()` helpers
+- New `monitor.run_check_with_thresholds()` and `run_all_checks_with_thresholds()` apply thresholds after each check
+- `pulseboard watch` and `pulseboard dashboard` loops now apply thresholds using a rolling window of stored history
+- Threshold outcome (which fired, measured error rate, sample size) attached to `CheckResult.details["thresholds"]`
+- DOWN status from the underlying check is never upgraded by a threshold
+- Config validation: warning ≤ critical, error-rate bounds 0-100, window ≥ 1
+- Worked examples in `pulseboard init` config and README
+
+### v0.5.0 — History Export (CSV / JSON) (2026-07-09)
+- New `pulseboard export` command with rich filter set: service, hours, ISO since/until, limit
+- Defaults to CSV on stdout (pipe-friendly); file extension selects format, or pass `--format`
+- New `Storage.get_history()` and `Storage.get_all_service_names()` for flexible historical queries
+- New `pulseboard.export` module with `write_export`, `write_export_stream`, `infer_format`
+- 44 export tests covering formats, filters, CLI behavior, and error paths
 
 ### v0.4.0 — HTTP Body Content Validation (2026-07-09)
 - New optional body checks on HTTP services: `body_contains`, `body_not_contains`, `body_regex`, `json_path`, `json_path_expected`
@@ -199,13 +260,13 @@ pytest
 - [x] SSL certificate expiry checks
 - [x] DNS monitoring
 - [x] Response body content validation (regex/JSON path)
+- [x] Configurable alert thresholds (latency, error rate)
+- [x] Export/import history (CSV, JSON)
 - [ ] Grafana/Prometheus metrics export
 - [ ] Incident timeline view
 - [ ] Web UI dashboard
 - [ ] Notification channels (Telegram, Discord, Slack, email)
 - [ ] Service groups and dependency tracking
-- [ ] Configurable alert thresholds (latency, error rate)
-- [ ] Export/import history (CSV, JSON)
 
 ## License
 

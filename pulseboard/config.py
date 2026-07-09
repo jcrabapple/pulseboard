@@ -67,6 +67,50 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                     f"'any', 'all', or 'exact', not '{dns_match_mode}'"
                 )
 
+        # Threshold validation
+        sname = entry.get("name", "<unnamed>")
+        lat_warn = entry.get("latency_warning_ms")
+        lat_crit = entry.get("latency_critical_ms")
+        if lat_warn is not None and float(lat_warn) < 0:
+            raise ConfigError(
+                f"Service '{sname}': latency_warning_ms must be >= 0"
+            )
+        if lat_crit is not None and float(lat_crit) < 0:
+            raise ConfigError(
+                f"Service '{sname}': latency_critical_ms must be >= 0"
+            )
+        if (
+            lat_warn is not None
+            and lat_crit is not None
+            and float(lat_warn) > float(lat_crit)
+        ):
+            raise ConfigError(
+                f"Service '{sname}': latency_warning_ms ({lat_warn}) must be "
+                f"<= latency_critical_ms ({lat_crit})"
+            )
+        er_warn = entry.get("error_rate_warning_pct")
+        er_crit = entry.get("error_rate_critical_pct")
+        for label, val in (("error_rate_warning_pct", er_warn),
+                           ("error_rate_critical_pct", er_crit)):
+            if val is not None and not (0.0 <= float(val) <= 100.0):
+                raise ConfigError(
+                    f"Service '{sname}': {label} must be between 0 and 100"
+                )
+        if (
+            er_warn is not None
+            and er_crit is not None
+            and float(er_warn) > float(er_crit)
+        ):
+            raise ConfigError(
+                f"Service '{sname}': error_rate_warning_pct ({er_warn}) must "
+                f"be <= error_rate_critical_pct ({er_crit})"
+            )
+        window = entry.get("error_rate_window")
+        if window is not None and int(window) < 1:
+            raise ConfigError(
+                f"Service '{sname}': error_rate_window must be >= 1"
+            )
+
         svc = ServiceConfig(
             name=entry["name"],
             url=entry.get("url", ""),
@@ -92,6 +136,27 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             json_path_expected=(
                 str(entry["json_path_expected"])
                 if entry.get("json_path_expected") is not None
+                else None
+            ),
+            latency_warning_ms=(
+                float(entry["latency_warning_ms"])
+                if entry.get("latency_warning_ms") is not None
+                else None
+            ),
+            latency_critical_ms=(
+                float(entry["latency_critical_ms"])
+                if entry.get("latency_critical_ms") is not None
+                else None
+            ),
+            error_rate_window=entry.get("error_rate_window", 50),
+            error_rate_warning_pct=(
+                float(entry["error_rate_warning_pct"])
+                if entry.get("error_rate_warning_pct") is not None
+                else None
+            ),
+            error_rate_critical_pct=(
+                float(entry["error_rate_critical_pct"])
+                if entry.get("error_rate_critical_pct") is not None
                 else None
             ),
         )
@@ -177,15 +242,35 @@ services:
     url: https://www.githubstatus.com/api/v2/status.json
     interval: 60
     # Body must contain this substring:
-    body_contains: "\"indicator\""
+    body_contains: '"indicator"'
     # Body must NOT contain this substring (e.g. an outage banner):
-    body_not_contains: "\"major\""
+    body_not_contains: '"major"'
     # Regex must match somewhere in the body:
     body_regex: '"status"\\s*:\\s*"none"'
     # Resolve a JSON path; optionally require it to equal a literal value:
     json_path: status.indicator
     json_path_expected: none
     tags: [api, status]
+
+  # Latency & error-rate thresholds — downgrade a service when it gets slow
+  # or starts failing too often, even if the HTTP request "succeeds".
+  - name: Slow API
+    url: https://api.example.com/health
+    interval: 60
+    # If latency >= 500ms, status becomes DEGRADED.
+    latency_warning_ms: 500
+    # If latency >= 2000ms, status becomes DOWN.
+    latency_critical_ms: 2000
+    tags: [api, slo]
+
+  # Error-rate thresholds use a rolling window of recent stored checks.
+  - name: Flaky Service
+    url: https://flaky.example.com
+    interval: 30
+    error_rate_window: 50          # consider the last 50 checks
+    error_rate_warning_pct: 10     # >= 10% failures -> DEGRADED
+    error_rate_critical_pct: 50    # >= 50% failures -> DOWN
+    tags: [slo, error-rate]
 """
 
 

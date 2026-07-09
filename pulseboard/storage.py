@@ -96,6 +96,48 @@ class Storage:
         ).fetchall()
         return [self._row_to_result(r) for r in rows]
 
+    def get_history(
+        self,
+        service_name: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        order: str = "asc",
+    ) -> list[CheckResult]:
+        """Query historical check results with optional filters.
+
+        Args:
+            service_name: If provided, only return rows for that service.
+            since: If provided, only return rows at or after this time (UTC).
+            until: If provided, only return rows at or before this time (UTC).
+            order: "asc" (oldest first, default) or "desc" (newest first).
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if service_name is not None:
+            clauses.append("service_name = ?")
+            params.append(service_name)
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until is not None:
+            clauses.append("timestamp <= ?")
+            params.append(until.isoformat())
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        direction = "DESC" if order.lower() == "desc" else "ASC"
+        query = (
+            f"SELECT * FROM checks {where} ORDER BY timestamp {direction}"
+        )
+        rows = self.conn.execute(query, params).fetchall()
+        return [self._row_to_result(r) for r in rows]
+
+    def get_all_service_names(self) -> list[str]:
+        """Return distinct service names that have at least one check record."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT service_name FROM checks ORDER BY service_name"
+        ).fetchall()
+        return [r["service_name"] for r in rows]
+
     def get_summary(
         self, service_name: str, hours: int = 24
     ) -> ServiceSummary:

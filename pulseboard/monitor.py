@@ -6,7 +6,7 @@ import asyncio
 import socket
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Iterable
 
 import httpx
 
@@ -14,6 +14,7 @@ from .models import CheckResult, ServiceConfig, ServiceType, Status
 from .content_check import has_content_checks, validate_body
 from .dns_check import check_dns
 from .ssl_check import check_ssl
+from .thresholds import evaluate_thresholds
 
 
 async def check_http(service: ServiceConfig) -> CheckResult:
@@ -152,4 +153,46 @@ async def run_check(service: ServiceConfig) -> CheckResult:
 async def run_all_checks(services: list[ServiceConfig]) -> list[CheckResult]:
     """Run checks against all services concurrently."""
     tasks = [run_check(svc) for svc in services]
+    return await asyncio.gather(*tasks)
+
+
+# A history provider takes a service name and returns recent CheckResults
+# (any order) used to evaluate error-rate thresholds.
+HistoryProvider = Callable[[str], Iterable[CheckResult]]
+
+
+async def run_check_with_thresholds(
+    service: ServiceConfig,
+    history_provider: HistoryProvider | None = None,
+) -> CheckResult:
+    """Run ``run_check`` and then apply configured latency / error-rate thresholds.
+
+    The returned :class:`CheckResult` reflects the worst of the underlying
+    status and any threshold violations, and its ``details`` dict gains a
+    ``"thresholds"`` key with the structured :class:`ThresholdOutcome`.
+    """
+    result = await run_check(service)
+    if not service.has_any_threshold():
+        return result
+
+    history = list(history_provider(service.name)) if history_provider else []
+    outcome = evaluate_thresholds(result, service, history)
+    if outcome.status != result.status:
+        result.status = outcome.status
+        # Keep the original error if there was one; otherwise surface the
+        # threshold reasons so dashboards / alerts see *why* the status changed.
+        if not result.error and outcome.reasons:
+            result.error = "; ".join(outcome.reasons)
+    result.details["thresholds"] = outcome.to_dict()
+    return result
+
+
+async def run_all_checks_with_thresholds(
+    services: list[ServiceConfig],
+    history_provider: HistoryProvider | None = None,
+) -> list[CheckResult]:
+    """Run checks against all services concurrently, applying thresholds."""
+    tasks = [
+        run_check_with_thresholds(svc, history_provider) for svc in services
+    ]
     return await asyncio.gather(*tasks)
