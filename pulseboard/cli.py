@@ -25,6 +25,7 @@ from .config import (
 )
 from .dashboard import (
     build_cert_table,
+    build_content_validation_table,
     build_dns_table,
     build_overview_table,
     console,
@@ -34,6 +35,7 @@ from .dashboard import (
 from .monitor import run_all_checks, run_check
 from .models import ServiceType, Status
 from .storage import Storage
+from .content_check import has_content_checks
 
 
 @click.group()
@@ -292,6 +294,47 @@ def dns(config: str | None, as_json: bool) -> None:
         bad = [r for r in results if r.status != Status.UP]
         if bad:
             console.print(f"\n[red]{len(bad)} DNS service(s) failing[/red]")
+            sys.exit(1)
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def validate(config: str | None, as_json: bool) -> None:
+    """Run HTTP checks and report body content validation results."""
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    services = parse_services(cfg)
+    http_services = [
+        s
+        for s in services
+        if s.service_type == ServiceType.HTTP and has_content_checks(s)
+    ]
+    if not http_services:
+        console.print(
+            "[yellow]No HTTP services with body content checks configured.[/yellow]"
+        )
+        console.print(
+            "Add body_contains, body_regex, json_path, or body_not_contains "
+            "to an HTTP service to use this command."
+        )
+        sys.exit(0)
+
+    results = asyncio.run(run_all_checks(http_services))
+
+    if as_json:
+        import json
+        click.echo(json.dumps([r.to_dict() for r in results], indent=2, default=str))
+    else:
+        table = build_content_validation_table(results)
+        console.print(table)
+        bad = [r for r in results if r.status != Status.UP]
+        if bad:
+            console.print(f"\n[red]{len(bad)} service(s) failing content validation[/red]")
             sys.exit(1)
 
 

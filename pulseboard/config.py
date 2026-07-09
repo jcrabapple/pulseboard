@@ -85,6 +85,15 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             dns_server=entry.get("dns_server"),
             dns_expected=entry.get("dns_expected"),
             dns_match_mode=entry.get("dns_match_mode", "any").lower(),
+            body_contains=entry.get("body_contains"),
+            body_not_contains=entry.get("body_not_contains"),
+            body_regex=entry.get("body_regex"),
+            json_path=entry.get("json_path"),
+            json_path_expected=(
+                str(entry["json_path_expected"])
+                if entry.get("json_path_expected") is not None
+                else None
+            ),
         )
         services.append(svc)
     return services
@@ -161,6 +170,22 @@ services:
     dns_record_type: MX
     interval: 600
     tags: [dns, mail]
+
+  # HTTP body content validation — confirm the response really means "OK"
+  # even when the status code is 200. Any/all of these may be combined.
+  - name: GitHub Status
+    url: https://www.githubstatus.com/api/v2/status.json
+    interval: 60
+    # Body must contain this substring:
+    body_contains: "\"indicator\""
+    # Body must NOT contain this substring (e.g. an outage banner):
+    body_not_contains: "\"major\""
+    # Regex must match somewhere in the body:
+    body_regex: '"status"\\s*:\\s*"none"'
+    # Resolve a JSON path; optionally require it to equal a literal value:
+    json_path: status.indicator
+    json_path_expected: none
+    tags: [api, status]
 """
 
 

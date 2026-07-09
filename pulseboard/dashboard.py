@@ -159,6 +159,44 @@ def print_status_line(results: list[CheckResult]) -> None:
     console.print(" | ".join(parts))
 
 
+def build_content_validation_table(results: list[CheckResult]) -> Table:
+    """Build a content-validation results table from HTTP check results."""
+    table = Table(
+        title="✅ Content Validation",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Status", width=6, justify="center")
+    table.add_column("Service", style="bold", min_width=18)
+    table.add_column("HTTP", justify="right", width=6)
+    table.add_column("Checks", min_width=20)
+    table.add_column("Notes", max_width=50)
+
+    def _sort_key(r: CheckResult) -> int:
+        order = {"up": 0, "degraded": 1, "down": 2, "unknown": 3}
+        return order.get(r.status.value, 9)
+
+    for r in sorted(results, key=_sort_key):
+        checks = r.details.get("content_checks") or []
+        if checks:
+            ok = sum(1 for c in checks if c.get("passed"))
+            total = len(checks)
+            check_str = f"[green]{ok}[/green]/{total} passed"
+        else:
+            check_str = "[dim]—[/dim]"
+
+        table.add_row(
+            Text(status_emoji(r.status), style=status_style(r.status)),
+            r.service_name,
+            str(r.status_code) if r.status_code is not None else "—",
+            check_str,
+            (r.error or "")[:120],
+        )
+    return table
+
+
 def build_cert_table(results: list[CheckResult]) -> Table:
     """Build a certificate expiry overview table from SSL check results."""
     table = Table(

@@ -51,6 +51,12 @@ class ServiceConfig:
     dns_server: str | None = None  # default: system resolver
     dns_expected: list[str] | None = None  # optional expected answers
     dns_match_mode: str = "any"  # "any" | "all" | "exact"
+    # For HTTP content validation (all optional, only checked on HTTP services)
+    body_contains: str | None = None  # substring that must appear in the response body
+    body_not_contains: str | None = None  # substring that must NOT appear (e.g. error markers)
+    body_regex: str | None = None  # regex that must match somewhere in the body
+    json_path: str | None = None  # dot path like "data.status" or "user.id"
+    json_path_expected: str | None = None  # if set, json_path value must equal this literal
 
 
 @dataclass

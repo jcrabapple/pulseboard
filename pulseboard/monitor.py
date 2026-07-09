@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from .models import CheckResult, ServiceConfig, ServiceType, Status
+from .content_check import has_content_checks, validate_body
 from .dns_check import check_dns
 from .ssl_check import check_ssl
 
@@ -37,6 +38,29 @@ async def check_http(service: ServiceConfig) -> CheckResult:
                 status = Status.DEGRADED
                 error = f"Unexpected status {resp.status_code} (expected {service.expected_status})"
 
+            details: dict[str, Any] = {
+                "content_length": len(resp.content),
+                "url": str(resp.url),
+            }
+
+            # Body content validation — only meaningful if the request
+            # actually returned a body and the user configured checks.
+            body_text = ""
+            try:
+                body_text = resp.text
+            except Exception:  # pragma: no cover - decoding rarely fails
+                body_text = ""
+
+            if has_content_checks(service) and body_text:
+                report = validate_body(service, body_text, resp.headers.get("content-type"))
+                details["content_checks"] = report.checks
+                if not report.passed and status == Status.UP:
+                    # HTTP says OK but the body indicates a problem —
+                    # downgrade to DEGRADED with the validation failures
+                    # as the user-visible error.
+                    status = Status.DEGRADED
+                    error = "; ".join(report.failures)
+
             return CheckResult(
                 service_name=service.name,
                 timestamp=datetime.now(timezone.utc),
@@ -44,10 +68,7 @@ async def check_http(service: ServiceConfig) -> CheckResult:
                 latency_ms=elapsed_ms,
                 status_code=resp.status_code,
                 error=error,
-                details={
-                    "content_length": len(resp.content),
-                    "url": str(resp.url),
-                },
+                details=details,
             )
     except httpx.TimeoutException:
         elapsed_ms = (time.monotonic() - start) * 1000
