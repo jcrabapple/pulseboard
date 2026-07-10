@@ -92,6 +92,12 @@ pulseboard groups                   # roll-up table of all groups
 pulseboard groups --json            # JSON payload (groups + member lists)
 pulseboard groups --graph           # print the dependency graph (topo order)
 pulseboard groups --group production  # focus on one group
+
+# 16. Export Prometheus metrics (see "Prometheus Metrics Export" below)
+pulseboard metrics                              # render to stdout
+pulseboard metrics -o /var/node_exporter/pulseboard.prom   # textfile mode
+pulseboard metrics --serve --port 9464          # scrape endpoint
+pulseboard metrics --hours 168 > pulseboard.prom
 ```
 
 ## Configuration
@@ -224,6 +230,7 @@ A DOWN status from the underlying check is never upgraded by thresholds.
 | `pulseboard notify-list` | List configured notification channels |
 | `pulseboard incidents` | View the incident timeline (durable state-change history) |
 | `pulseboard groups` | Show service-group roll-up and the dependency graph |
+| `pulseboard metrics` | Export check history as Prometheus metrics (stdout, textfile, or HTTP) |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
 
@@ -267,6 +274,118 @@ The `incidents` table is schema-migrated automatically on first
 launch. The schema also includes a partial index on
 `(service_name) WHERE ended_at IS NULL` so the "what's still
 broken right now" query stays fast as the history grows.
+
+## Prometheus Metrics Export
+
+PulseBoard can render its check history into the
+[Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-example),
+so any OpenMetrics-compatible scraper (Prometheus, VictoriaMetrics,
+Thanos, Mimir, node_exporter's textfile collector) can ingest it
+without an exporter sidecar. Three modes are supported:
+
+| Mode | Command | When to use |
+|------|---------|-------------|
+| **stdout** | `pulseboard metrics` | Pipe to `curl --data-binary @-` against a [Pushgateway](https://github.com/prometheus/pushgateway), or capture into a file |
+| **textfile** | `pulseboard metrics -o /path/to/file.prom` | Drop into node_exporter's `--collector.textfile.directory` for batch-style metrics on a cron |
+| **serve** | `pulseboard metrics --serve --host 0.0.0.0 --port 9464` | Run a dedicated scrape endpoint — Prometheus scrapes it directly |
+
+The textfile mode writes atomically (writes to `*.tmp` then `os.replace`
+into place), so node_exporter never scrapes a half-written file.
+
+### Metric families
+
+All families carry the `pulseboard_` prefix and are labeled with
+`service` (configured service name) plus `type` (resolved service type:
+`http`, `tcp`, `dns`, `ssl`, or `unknown`).
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `pulseboard_up` | gauge | `1` if the most recent check was `UP`, else `0` — the classic "is it up?" signal |
+| `pulseboard_status` | gauge | Numeric encoding: `1`=UP, `2`=DEGRADED, `3`=DOWN, `4`=UNKNOWN |
+| `pulseboard_status_code` | gauge | Last HTTP status code observed (0 when not applicable) |
+| `pulseboard_latency_seconds` | gauge | Most recent check latency, in seconds |
+| `pulseboard_checks_total` | counter | Lifetime number of checks performed for this service |
+| `pulseboard_incidents_total` | counter | Lifetime number of incidents opened for this service |
+| `pulseboard_open_incidents` | gauge | Currently-open incidents for this service |
+| `pulseboard_uptime_ratio` | gauge | Uptime fraction over the requested window (0.0–1.0) |
+| `pulseboard_avg_latency_ms` / `_min_` / `_max_` / `_p95_` / `_p99_` | gauge | Aggregate latency statistics over the window |
+| `pulseboard_last_check_timestamp_seconds` | gauge | Unix timestamp of the most recent check — `time() - pulseboard_last_check_timestamp_seconds` is "staleness" in seconds |
+| `pulseboard_scrape_duration_seconds` | gauge | Self-metric: how long the exporter took to render |
+| `pulseboard_services_exported` | gauge | Self-metric: number of services in this scrape payload |
+
+The numeric `pulseboard_status` encoding is intentionally stable across
+releases so dashboards and alerts can rely on it. `pulseboard_status == 3`
+is the canonical "this service is currently down" assertion (everything
+below it means the service is healthy enough to merit attention).
+
+### `prometheus.yml` scrape config
+
+For the serve mode, point a Prometheus scrape job at the endpoint:
+
+```yaml
+scrape_configs:
+  - job_name: pulseboard
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['pulseboard.local:9464']
+        labels:
+          env: home
+          monitor_source: pulseboard
+```
+
+For the Pushgateway (one-shot, useful in `cron` or systemd timers that
+restart often):
+
+```bash
+pulseboard metrics --hours 168 \
+  | curl --data-binary @- http://pushgateway:9091/metrics/job/pulseboard/instance/home
+```
+
+For node_exporter's textfile collector (zero port, just a file):
+
+```bash
+# /etc/cron.d/pulseboard-metrics — every minute
+* * * * * pulseboard metrics -o /var/lib/node_exporter/textfile_collector/pulseboard.prom
+```
+
+### Quick PromQL
+
+A handful of recipes that map well onto the metrics above:
+
+```promql
+# Fraction of services currently UP — a global SLO signal
+sum(pulseboard_up) / count(pulseboard_up)
+
+# Anything that has been DOWN for at least 5 minutes
+pulseboard_status == 3
+  and on(service) (time() - pulseboard_last_check_timestamp_seconds > 300)
+
+# 99th-percentile latency, top 5 slowest services
+topk(5, pulseboard_p99_latency_ms)
+
+# Alert: any service with open incidents
+pulseboard_open_incidents > 0
+
+# Alert: any service went from UP to non-UP in the last 5 minutes
+changes(pulseboard_status[5m]) > 0 and pulseboard_status != 1
+```
+
+The exporter does not maintain its own alerting — it just renders
+metrics. Plug the rules above (or your own) into your existing
+Alertmanager pipeline.
+
+### Tuning
+
+`--hours N` controls the window for the aggregate gauges (`uptime_ratio`,
+`avg_latency_ms`, percentiles). The lifetime counters
+(`checks_total`, `incidents_total`, `open_incidents`) are independent of
+the window and always reflect total history. Default is 24 hours; pick
+longer when building SLO dashboards (e.g. `--hours 720` for 30 days).
+
+In serve mode, the binder binds to `127.0.0.1` by default — set
+`--host 0.0.0.0` (or your interface IP) when exposing beyond the loopback
+interface. No auth, so put it behind a reverse proxy or a firewall rule
+when running on a shared network.
 
 ## Service Groups & Dependencies
 
@@ -424,6 +543,22 @@ pytest
 
 ## Changelog
 
+### v0.11.0 — Prometheus Metrics Export (2026-07-10)
+- New `pulseboard metrics` CLI command with three modes: **stdout** (default), **textfile** (`-o`/atomic write for node_exporter's textfile collector), and **serve** (HTTP server exposing `/metrics`, `/`, `/healthz` on a configurable host/port)
+- New `pulseboard.metrics` module with `MetricsExporter` (render the full PulseBoard history as a Prometheus text payload), `MetricSample` dataclass (single sample with HELP/TYPE rendering, label escaping per spec), `render_samples()` (aggregate samples into the canonical family-grouped text format), and `serve_metrics()` (built-in `ThreadingHTTPServer` runner with optional `max_requests` bound for tests)
+- 12 stable per-service metric families — `pulseboard_up`, `pulseboard_status` (numeric encoding `1=UP, 2=DEGRADED, 3=DOWN, 4=UNKNOWN`), `pulseboard_status_code`, `pulseboard_latency_seconds`, `pulseboard_checks_total`, `pulseboard_incidents_total`, `pulseboard_open_incidents`, `pulseboard_uptime_ratio`, `pulseboard_avg_latency_ms`/`_min_`/`_max_`/`_p95_`/`_p99_`, `pulseboard_last_check_timestamp_seconds` — plus two self-metrics (`pulseboard_scrape_duration_seconds`, `pulseboard_services_exported`)
+- Every per-service sample carries `service` (configured name) and `type` (resolved service type) labels — so PromQL can slice by `type="http"` / `type="ssl"` / etc.
+- Scrape-config example, Pushgateway piping example, and node_exporter textfile cron example included in the README
+- README "Quick PromQL" recipes for global SLO (`sum(pulseboard_up) / count(pulseboard_up)`), "down > 5 minutes" alerts, top-5 slowest by `p95_latency_ms`, and recent `changes(pulseboard_status[5m])` alerts
+- The numeric `pulseboard_status` encoding is documented as a stable contract — dashboards and alerts can rely on it across releases
+- `--hours N` controls the windowed aggregate gauges; lifetime counters (`checks_total`, `incidents_total`, `open_incidents`) are always total history
+- Empty DB emits only the two self-metrics — no per-service lines for services that haven't been checked yet
+- Textfile mode writes via `tempfile.mkstemp` + `fsync` + `os.replace`, so node_exporter never scrapes a half-written file
+- `--serve` and `--output` are mutually exclusive at the CLI; bad port binding exits with a clear OSError message and a non-zero code
+- Defensive fallback in `_last_result_for`, `_open_incidents_by_service`, `_lifetime_checks_by_service`, and `_lifetime_incidents_for` — if a `Storage` adapter doesn't implement a fast path, the exporter falls back to scanning the existing APIs instead of crashing
+- 50 tests covering: `MetricSample` (value types, label/value escaping, HELP/TYPE preamble, sorted labels, bool→`0/1`), `render_samples` (family ordering, single HELP/TYPE per family, empty input), per-service metrics (windowed aggregates, status numeric encoding, lifetime counters, missing-result semantics, type-resolver override), `MetricsExporter` against a seeded `Storage` (no-checks, single-service full payload, open-incidents counting, lifetime counter correctness, multi-service payload, type resolver fallback), textfile mode (parent directory creation, atomic overwrite, no tmp left behind, sample-count return), HTTP server (`/metrics`, `/`, `/healthz`, unknown path 404, `max_requests` shutdown, listener-bind binding), and full CLI behavior (help lists all modes, stdout emits payload, textfile writes file in nested directory, missing config exits non-zero, empty DB emits only self-metrics)
+- README roadmap checkbox for "Grafana/Prometheus metrics export" ticked — full feature is now discoverable
+
 ### v0.10.0 — Service Groups & Dependency Tracking (2026-07-09)
 - New `pulseboard groups` CLI command with three modes: roll-up table (default), `--graph` (topological dependency view), and `--json`
 - `--group <name>` filter focuses the output on a single group
@@ -540,7 +675,7 @@ pytest
 - [x] Notification channels (Slack, Discord, Telegram, email, generic webhook)
 - [x] Incident timeline view
 - [x] Service groups and dependency tracking
-- [ ] Grafana/Prometheus metrics export
+- [x] Grafana/Prometheus metrics export
 - [ ] Web UI dashboard
 
 ## License
