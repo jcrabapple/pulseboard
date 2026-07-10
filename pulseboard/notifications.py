@@ -533,6 +533,8 @@ class NotificationDispatcher:
                     f"field: {e}"
                 ) from e
             ch.validate()
+            if any(existing.name == ch.name for existing in channels):
+                raise ValueError(f"Duplicate notification channel name '{ch.name}'")
             channels.append(ch)
         return cls(channels)
 

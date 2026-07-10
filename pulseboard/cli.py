@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
+import yaml
 from rich.console import Console
 from rich.live import Live
 
@@ -17,6 +18,7 @@ from . import __version__
 from .alerting import Alert, AlertManager, AlertType, terminal_alert
 from .notifications import NotificationDispatcher
 from .config import (
+    ConfigError,
     DEFAULT_CONFIG_PATH,
     EXAMPLE_CONFIG,
     find_config,
@@ -601,10 +603,43 @@ def config_path() -> None:
         console.print(f"[dim]No config found. Default location: {DEFAULT_CONFIG_PATH}[/dim]")
 
 
+@cli.command("validate-config")
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+def validate_config(config: str | None) -> None:
+    """Validate the configuration without running checks."""
+    try:
+        cfg = load_config(config)
+        services = parse_services(cfg)
+        settings = get_settings(cfg)
+        notifier = NotificationDispatcher.from_config(
+            settings.get("notification_channels", [])
+        )
+        known_channels = set(notifier._by_name)
+        for service in services:
+            for channel_name in service.alert_channels:
+                if channel_name not in known_channels:
+                    raise ConfigError(
+                        f"Service '{service.name}': alert_channels references "
+                        f"unknown notification channel '{channel_name}'"
+                    )
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise click.exceptions.Exit(1) from e
+    except yaml.YAMLError as e:
+        console.print(f"[red]✗[/red] Invalid YAML: {e}")
+        raise click.exceptions.Exit(1) from e
+    except (ConfigError, KeyError, TypeError, ValueError) as e:
+        console.print(f"[red]✗[/red] Invalid config: {e}")
+        raise click.exceptions.Exit(1) from e
+
+    count = len(services)
+    noun = "service" if count == 1 else "services"
+    console.print(f"[green]✓[/green] Config valid: {count} {noun}")
+
+
 def _build_test_alert(service_name: str) -> Alert:
     """Construct a synthetic DOWN alert for notify-test."""
-    from .models import CheckResult, Status
-    from datetime import datetime, timezone
+    from .models import CheckResult
 
     result = CheckResult(
         service_name=service_name,

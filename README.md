@@ -48,6 +48,9 @@ pulseboard init
 
 # 2. Edit ~/.config/pulseboard/config.yaml with your services
 
+# Validate YAML, service definitions, dependencies, and alert routing
+pulseboard validate-config
+
 # 3. Run a one-time check
 pulseboard check
 
@@ -101,6 +104,11 @@ pulseboard metrics --hours 168 > pulseboard.prom
 ```
 
 ## Configuration
+
+Run `pulseboard validate-config` after editing the file to catch malformed
+YAML, invalid service definitions, dependency errors, duplicate notification
+channel names, and unknown names in `alert_channels` without making network
+requests. Use `-c path/to/config.yaml` to validate a non-default file.
 
 ```yaml
 settings:
@@ -233,6 +241,7 @@ A DOWN status from the underlying check is never upgraded by thresholds.
 | `pulseboard metrics` | Export check history as Prometheus metrics (stdout, textfile, or HTTP) |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
+| `pulseboard validate-config` | Validate config and notification routing without running checks |
 
 ## Incident Timeline
 
@@ -542,6 +551,11 @@ pytest
 ```
 
 ## Changelog
+
+### Unreleased
+- New `pulseboard validate-config` command validates configuration without running checks or opening the history database
+- Friendly non-zero errors for malformed YAML, non-mapping roots, invalid service-list shapes, duplicate notification channel names, and service routes that reference unknown notification channels
+- Valid configurations report the parsed service count, making the command suitable for deployment and CI preflight checks
 
 ### v0.11.0 — Prometheus Metrics Export (2026-07-10)
 - New `pulseboard metrics` CLI command with three modes: **stdout** (default), **textfile** (`-o`/atomic write for node_exporter's textfile collector), and **serve** (HTTP server exposing `/metrics`, `/`, `/healthz` on a configurable host/port)

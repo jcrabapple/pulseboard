@@ -39,6 +39,8 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     config_path = find_config(path)
     with open(config_path) as f:
         raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise ConfigError("Config top level must be a mapping")
     return raw
 
 
@@ -49,7 +51,12 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
     missing or contain invalid values.
     """
     services: list[ServiceConfig] = []
-    for entry in raw.get("services") or []:
+    entries = raw.get("services") or []
+    if not isinstance(entries, list):
+        raise ConfigError("Config services must be a list")
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"Service entry {index} must be a mapping")
         stype = ServiceType(entry.get("type", "http"))
 
         # DNS-specific validation
