@@ -106,3 +106,56 @@ def test_parse_services_rejects_duplicate_names() -> None:
 
     with pytest.raises(ConfigError, match="Duplicate service name 'API'"):
         parse_services(config)
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast validation: bad URLs (no scheme or non-http scheme)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_services_rejects_http_service_url_without_scheme() -> None:
+    """An HTTP service URL missing a http:// or https:// scheme must fail."""
+    config = {"services": [{"name": "API", "url": "api.example.com/health"}]}
+    with pytest.raises(ConfigError, match="url must start with http:// or https://"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_http_service_url_with_ftp_scheme() -> None:
+    """A non-http scheme like ftp:// must be rejected for http services."""
+    config = {"services": [{"name": "FTP", "url": "ftp://files.example.com"}]}
+    with pytest.raises(ConfigError, match="url must start with http:// or https://"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_http_service_with_empty_url() -> None:
+    """An empty URL string must fail at config-load time."""
+    config = {"services": [{"name": "Empty", "url": ""}]}
+    with pytest.raises(ConfigError, match="url must start with http:// or https://"):
+        parse_services(config)
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast validation: bad intervals
+# ---------------------------------------------------------------------------
+
+
+def test_parse_services_rejects_interval_less_than_one_second() -> None:
+    """An interval of 0 is not a valid check schedule."""
+    config = {
+        "services": [
+            {"name": "Fast", "url": "https://api.example.com", "interval": 0}
+        ]
+    }
+    with pytest.raises(ConfigError, match="interval must be >= 1"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_negative_interval() -> None:
+    """A negative interval must be rejected."""
+    config = {
+        "services": [
+            {"name": "Neg", "url": "https://api.example.com", "interval": -10}
+        ]
+    }
+    with pytest.raises(ConfigError, match="interval must be >= 1"):
+        parse_services(config)

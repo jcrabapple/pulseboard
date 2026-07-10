@@ -74,10 +74,46 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                     f"'any', 'all', or 'exact', not '{dns_match_mode}'"
                 )
 
-        # Threshold validation
+        # -------- URL scheme validation (HTTP services only) ---
+        # HTTP services go through redirects, body parsing, and direct
+        # https:// fetches; a missing or wrong scheme (bare host, ftp://)
+        # silently does the wrong thing at check time, so we catch it here.
         sname = entry.get("name", "<unnamed>")
+        if stype == ServiceType.HTTP:
+            service_url = entry.get("url", "")
+            if not isinstance(service_url, str) or not (
+                service_url.startswith("http://")
+                or service_url.startswith("https://")
+            ):
+                raise ConfigError(
+                    f"Service '{sname}': url must start with http:// or https:// "
+                    f"(got: {service_url!r})"
+                )
+
+        # Threshold validation
         lat_warn = entry.get("latency_warning_ms")
         lat_crit = entry.get("latency_critical_ms")
+
+        # --- Interval validation ---
+        # A check interval of 0 or less is nonsensical — it would cause a
+        # tight spin loop and overwhelm the target. Enforce minimum 1s.
+        interval_val = entry.get("interval", 60)
+        if isinstance(interval_val, bool):
+            # bool is an int subclass; reject it explicitly, because
+            # ``True``/``False`` would otherwise silently pass as 1/0.
+            raise ConfigError(
+                f"Service '{sname}': interval must be a positive integer (seconds), "
+                f"got boolean"
+            )
+        if not isinstance(interval_val, (int, float)):
+            raise ConfigError(
+                f"Service '{sname}': interval must be a number (seconds), "
+                f"got {type(interval_val).__name__}"
+            )
+        if interval_val < 1:
+            raise ConfigError(
+                f"Service '{sname}': interval must be >= 1 (seconds), got {interval_val}"
+            )
         if lat_warn is not None and float(lat_warn) < 0:
             raise ConfigError(
                 f"Service '{sname}': latency_warning_ms must be >= 0"
