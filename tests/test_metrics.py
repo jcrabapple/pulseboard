@@ -252,6 +252,7 @@ class TestBuildServiceMetrics:
             "pulseboard_last_check_timestamp_seconds",
             "pulseboard_open_incidents",
             "pulseboard_incidents_total",
+            "pulseboard_p50_latency_ms",
         } <= names
 
     def test_up_value_is_one_when_status_up(self):
@@ -291,6 +292,20 @@ class TestBuildServiceMetrics:
         ratio = next(s for s in samples if s.name == "pulseboard_uptime_ratio")
         # 90% uptime should be 0.9, not 90
         assert ratio.value == pytest.approx(0.9)
+
+    def test_p50_latency_ms_propagates_from_summary(self):
+        """pulseboard_p50_latency_ms should equal the summary's median."""
+        summary = self._summary()
+        summary.p50_latency_ms = 77.0
+        samples = metrics._build_service_metrics(
+            summary=summary,
+            last_result=_make_result("github", Status.UP, latency=120.0),
+            open_incidents=0,
+            lifetime_checks=10,
+            lifetime_incidents=0,
+        )
+        p50 = next(s for s in samples if s.name == "pulseboard_p50_latency_ms")
+        assert p50.value == pytest.approx(77.0)
 
     def test_latency_seconds_is_ms_divided_by_1000(self):
         summary = self._summary()

@@ -97,6 +97,30 @@ def test_storage_summary(tmp_path):
     storage.close()
 
 
+def test_storage_summary_includes_p50_latency(tmp_path):
+    """Storage.get_summary should compute the p50 (median) latency."""
+    db = tmp_path / "test.db"
+    storage = Storage(db)
+
+    # Store five "up" checks with sorted latencies [10, 20, 30, 40, 50].
+    # The median (p50) is 30.0.
+    for lat in (10.0, 20.0, 30.0, 40.0, 50.0):
+        storage.store(
+            CheckResult(
+                service_name="svc",
+                timestamp=datetime.now(timezone.utc),
+                status=Status.UP,
+                latency_ms=lat,
+                status_code=200,
+            )
+        )
+
+    summary = storage.get_summary("svc", hours=1)
+    assert summary.p50_latency_ms == 30.0
+
+    storage.close()
+
+
 def test_storage_prune(tmp_path):
     db = tmp_path / "test.db"
     storage = Storage(db)

@@ -38,9 +38,9 @@ gauges and counters with the ``pulseboard_`` prefix:
 - ``pulseboard_uptime_ratio`` (gauge) — uptime fraction over the
   requested window (0.0–1.0).
 - ``pulseboard_avg_latency_ms`` / ``pulseboard_min_latency_ms`` /
-  ``pulseboard_max_latency_ms`` / ``pulseboard_p95_latency_ms`` /
-  ``pulseboard_p99_latency_ms`` (gauges) — aggregate latency
-  statistics over the window.
+  ``pulseboard_max_latency_ms`` / ``pulseboard_p50_latency_ms`` /
+  ``pulseboard_p95_latency_ms`` / ``pulseboard_p99_latency_ms`` (gauges)
+  — aggregate latency statistics over the window.
 - ``pulseboard_last_check_timestamp_seconds`` (gauge) — Unix timestamp
   of the most recent check.
 
@@ -389,6 +389,13 @@ def _build_service_metrics(
         value=float(summary.p99_latency_ms),
         labels=dict(base_labels),
         help_text="99th-percentile latency over the window, in milliseconds.",
+        metric_type="gauge",
+    ))
+    samples.append(MetricSample(
+        name="pulseboard_p50_latency_ms",
+        value=float(summary.p50_latency_ms),
+        labels=dict(base_labels),
+        help_text="50th-percentile (median) latency over the window, in milliseconds.",
         metric_type="gauge",
     ))
 

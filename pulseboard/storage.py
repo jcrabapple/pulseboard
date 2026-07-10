@@ -202,6 +202,7 @@ class Storage:
 
         p95_idx = int(len(latencies_sorted) * 0.95) if latencies_sorted else 0
         p99_idx = int(len(latencies_sorted) * 0.99) if latencies_sorted else 0
+        p50_idx = int(len(latencies_sorted) * 0.50) if latencies_sorted else 0
 
         return ServiceSummary(
             service_name=service_name,
@@ -216,6 +217,7 @@ class Storage:
             last_check=datetime.fromisoformat(last_row["timestamp"]) if last_row else None,
             p95_latency_ms=round(latencies_sorted[min(p95_idx, len(latencies_sorted) - 1)], 2),
             p99_latency_ms=round(latencies_sorted[min(p99_idx, len(latencies_sorted) - 1)], 2),
+            p50_latency_ms=round(latencies_sorted[min(p50_idx, len(latencies_sorted) - 1)], 2),
         )
 
     def get_all_summaries(self, hours: int = 24) -> list[ServiceSummary]:

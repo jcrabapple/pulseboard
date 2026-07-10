@@ -272,6 +272,7 @@ class ServiceSummary:
     last_check: datetime | None
     p95_latency_ms: float = 0.0
     p99_latency_ms: float = 0.0
+    p50_latency_ms: float = 0.0
 
     @property
     def status_emoji(self) -> str:

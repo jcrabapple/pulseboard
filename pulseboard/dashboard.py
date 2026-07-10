@@ -89,6 +89,7 @@ def build_latency_table(summaries: list[ServiceSummary]) -> Table:
     )
     table.add_column("Service", style="bold", min_width=20)
     table.add_column("Avg", justify="right", width=8)
+    table.add_column("P50", justify="right", width=8)
     table.add_column("P95", justify="right", width=8)
     table.add_column("P99", justify="right", width=8)
     table.add_column("Min", justify="right", width=8)
@@ -100,6 +101,7 @@ def build_latency_table(summaries: list[ServiceSummary]) -> Table:
         table.add_row(
             s.service_name,
             f"{s.avg_latency_ms:.0f}ms",
+            f"{s.p50_latency_ms:.0f}ms",
             f"{s.p95_latency_ms:.0f}ms",
             f"{s.p99_latency_ms:.0f}ms",
             f"{s.min_latency_ms:.0f}ms",
