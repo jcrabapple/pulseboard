@@ -159,3 +159,52 @@ def test_parse_services_rejects_negative_interval() -> None:
     }
     with pytest.raises(ConfigError, match="interval must be >= 1"):
         parse_services(config)
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast validation: bad timeout values
+# ---------------------------------------------------------------------------
+
+
+def test_parse_services_rejects_zero_timeout() -> None:
+    """A timeout of 0 would make every check instantly fail."""
+    config = {
+        "services": [
+            {"name": "Fast", "url": "https://api.example.com", "timeout": 0}
+        ]
+    }
+    with pytest.raises(ConfigError, match="timeout must be >= 1"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_negative_timeout() -> None:
+    """A negative timeout is nonsensical and must be rejected."""
+    config = {
+        "services": [
+            {"name": "Neg", "url": "https://api.example.com", "timeout": -5}
+        ]
+    }
+    with pytest.raises(ConfigError, match="timeout must be >= 1"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_non_numeric_string_timeout() -> None:
+    """A string timeout like 'fast' should fail, not silently become falsy."""
+    config = {
+        "services": [
+            {"name": "Str", "url": "https://api.example.com", "timeout": "fast"}
+        ]
+    }
+    with pytest.raises(ConfigError, match="timeout must be a number"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_boolean_timeout() -> None:
+    """A boolean timeout (True/False) must be rejected, not coerced to 1/0."""
+    config = {
+        "services": [
+            {"name": "Bool", "url": "https://api.example.com", "timeout": True}
+        ]
+    }
+    with pytest.raises(ConfigError, match="timeout must be a number"):
+        parse_services(config)

@@ -114,6 +114,27 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             raise ConfigError(
                 f"Service '{sname}': interval must be >= 1 (seconds), got {interval_val}"
             )
+
+        # --- Timeout validation ---
+        # A timeout of 0 or less means every check would instantly
+        # time out (httpx, asyncio.wait_for, etc.), and non-numeric
+        # values like strings or booleans would silently coerce or
+        # crash at runtime. Catch them here at load time.
+        timeout_val = entry.get("timeout", 10)
+        if isinstance(timeout_val, bool):
+            raise ConfigError(
+                f"Service '{sname}': timeout must be a number (seconds), "
+                f"got boolean"
+            )
+        if not isinstance(timeout_val, (int, float)):
+            raise ConfigError(
+                f"Service '{sname}': timeout must be a number (seconds), "
+                f"got {type(timeout_val).__name__}"
+            )
+        if timeout_val < 1:
+            raise ConfigError(
+                f"Service '{sname}': timeout must be >= 1 (seconds), got {timeout_val}"
+            )
         if lat_warn is not None and float(lat_warn) < 0:
             raise ConfigError(
                 f"Service '{sname}': latency_warning_ms must be >= 0"
