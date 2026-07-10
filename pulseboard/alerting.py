@@ -17,11 +17,24 @@ class AlertManager:
     def __init__(self, alert_on_recovery: bool = True):
         self.alert_on_recovery = alert_on_recovery
         self._previous_status: dict[str, Status] = {}
+        # Per-service count of consecutive non-UP checks. Incremented on
+        # every DOWN or DEGRADED result, reset to 0 when the service is UP.
+        self._consecutive_failures: dict[str, int] = {}
 
     def evaluate(self, result: CheckResult) -> Alert | None:
         """Evaluate a check result and return an Alert if state changed."""
         prev = self._previous_status.get(result.service_name)
         self._previous_status[result.service_name] = result.status
+
+        # Update the consecutive-failure counter: any non-UP status
+        # increments; a UP status resets to 0.
+        if result.status == Status.UP:
+            self._consecutive_failures[result.service_name] = 0
+        else:
+            self._consecutive_failures[result.service_name] = (
+                self._consecutive_failures.get(result.service_name, 0) + 1
+            )
+        failures = self._consecutive_failures[result.service_name]
 
         if prev is None:
             # First check — only alert if down
@@ -31,6 +44,7 @@ class AlertManager:
                     alert_type=AlertType.DOWN,
                     result=result,
                     message=f"🔴 {result.service_name} is DOWN: {result.error}",
+                    consecutive_failures=failures,
                 )
             return None
 
@@ -42,6 +56,7 @@ class AlertManager:
                     alert_type=AlertType.DOWN,
                     result=result,
                     message=f"🔴 {result.service_name} went DOWN: {result.error}",
+                    consecutive_failures=failures,
                 )
             elif result.status == Status.UP and prev == Status.DOWN:
                 if self.alert_on_recovery:
@@ -50,6 +65,7 @@ class AlertManager:
                         alert_type=AlertType.RECOVERY,
                         result=result,
                         message=f"🟢 {result.service_name} recovered ({result.latency_ms:.0f}ms)",
+                        consecutive_failures=failures,
                     )
             elif result.status == Status.DEGRADED:
                 return Alert(
@@ -57,6 +73,7 @@ class AlertManager:
                     alert_type=AlertType.DEGRADED,
                     result=result,
                     message=f"🟡 {result.service_name} degraded: {result.error}",
+                    consecutive_failures=failures,
                 )
         return None
 
@@ -72,6 +89,7 @@ class AlertManager:
     def reset(self) -> None:
         """Clear all tracked state."""
         self._previous_status.clear()
+        self._consecutive_failures.clear()
 
 
 class AlertType(str):
@@ -89,12 +107,14 @@ class Alert:
         alert_type: str,
         result: CheckResult,
         message: str,
-    ):
+        consecutive_failures: int = 0,
+    ) -> None:
         self.service_name = service_name
         self.alert_type = alert_type
         self.result = result
         self.message = message
         self.timestamp = datetime.now(timezone.utc)
+        self.consecutive_failures = consecutive_failures
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +124,7 @@ class Alert:
             "timestamp": self.timestamp.isoformat(),
             "latency_ms": self.result.latency_ms,
             "error": self.result.error,
+            "consecutive_failures": self.consecutive_failures,
         }
 
     def __str__(self) -> str:

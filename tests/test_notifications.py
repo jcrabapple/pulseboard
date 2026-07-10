@@ -182,10 +182,12 @@ class TestWebhookRenderer:
         payload = render_webhook_payload(alert)
         expected_keys = {
             "service_name", "type", "message", "timestamp", "latency_ms", "error",
+            "consecutive_failures",
         }
         assert set(payload.keys()) == expected_keys
         assert payload["service_name"] == "GitHub"
         assert payload["type"] == "down"
+        assert payload["consecutive_failures"] == 0
 # ---------------------------------------------------------------------------
 # NotificationChannel dataclass & validation
 # ---------------------------------------------------------------------------

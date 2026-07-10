@@ -783,3 +783,74 @@ class TestRecordedCache:
         _RECORDED_KEYS.add(("x", "up", "down", "2026-01-01T00:00:00+00:00"))
         reset_recorded_cache()
         assert len(_RECORDED_KEYS) == 0
+
+
+# ---------------------------------------------------------------------------
+# Consecutive failure tracking — exposed on Alert + Alert.to_dict()
+# ---------------------------------------------------------------------------
+
+
+class TestConsecutiveFailures:
+    """The AlertManager should count how many checks in a row have been
+    non-UP for a service and expose that count on the resulting Alert."""
+
+    def test_first_down_alert_has_consecutive_failures_one(self) -> None:
+        mgr = AlertManager()
+        mgr.evaluate(_r("api", Status.UP, 0))
+        alert = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert alert is not None
+        assert alert.consecutive_failures == 1
+
+    def test_second_down_alert_has_consecutive_failures_two(self) -> None:
+        mgr = AlertManager()
+        mgr.evaluate(_r("api", Status.UP, 0))
+        mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        # The second DOWN result doesn't fire an Alert (no status change),
+        # but the counter should still increment.
+        alert = mgr.evaluate(_r("api", Status.DOWN, 120, error="still down"))
+        assert alert is None
+        # Recovery should reset the counter.
+        alert = mgr.evaluate(_r("api", Status.UP, 180))
+        assert alert is not None
+        # A fresh failure starts counting from 1 again.
+        alert = mgr.evaluate(_r("api", Status.DOWN, 240, error="again"))
+        assert alert is not None
+        assert alert.consecutive_failures == 1
+
+    def test_degraded_counts_as_failure(self) -> None:
+        mgr = AlertManager()
+        mgr.evaluate(_r("api", Status.UP, 0))
+        alert = mgr.evaluate(_r("api", Status.DEGRADED, 60, error="slow"))
+        assert alert is not None
+        assert alert.consecutive_failures == 1
+        # Downgrade further — still non-UP, still counting.
+        alert = mgr.evaluate(_r("api", Status.DOWN, 120, error="boom"))
+        assert alert is not None
+        assert alert.consecutive_failures == 2
+
+    def test_up_result_resets_counter(self) -> None:
+        mgr = AlertManager()
+        mgr.evaluate(_r("api", Status.UP, 0))
+        mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        alert = mgr.evaluate(_r("api", Status.UP, 120))
+        assert alert is not None  # recovery alert
+        assert alert.consecutive_failures == 0
+
+    def test_alert_to_dict_includes_consecutive_failures(self) -> None:
+        """The serialized payload (sent to webhooks) must carry the count
+        so external systems can escalate after N failures."""
+        mgr = AlertManager()
+        mgr.evaluate(_r("api", Status.UP, 0))
+        alert = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert alert is not None
+        d = alert.to_dict()
+        assert d["consecutive_failures"] == 1
+
+    def test_first_up_check_has_zero_failures(self) -> None:
+        mgr = AlertManager()
+        alert = mgr.evaluate(_r("api", Status.UP, 0))
+        assert alert is None
+        # No alert, but internal state should have zero consecutive failures.
+        alert = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert alert is not None
+        assert alert.consecutive_failures == 1
