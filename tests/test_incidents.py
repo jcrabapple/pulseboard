@@ -850,7 +850,115 @@ class TestConsecutiveFailures:
         mgr = AlertManager()
         alert = mgr.evaluate(_r("api", Status.UP, 0))
         assert alert is None
-        # No alert, but internal state should have zero consecutive failures.
+        # No alert, but internal state should have zero failures.
         alert = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
         assert alert is not None
         assert alert.consecutive_failures == 1
+
+
+# ---------------------------------------------------------------------------
+# Alert deduplication / cooldown
+# ---------------------------------------------------------------------------
+
+
+class TestAlertCooldown:
+    """When a service flaps UP→DOWN→UP→DOWN rapidly, the AlertManager
+    must not re-fire the same alert type within a cooldown window.
+
+    This is the dedup concern: repeated identical alerts within ``cooldown``
+    seconds are suppressed so notification channels don't get spammed.
+    """
+
+    def test_alert_suppressed_within_cooldown_for_flapping_service(self) -> None:
+        """DOWN → UP → DOWN within cooldown: second DOWN alert suppressed."""
+        # Use a controllable clock so the test is deterministic.
+        from datetime import timezone as _tz
+
+        ticks: list[datetime] = [datetime(2026, 1, 1, 12, 0, 0, tzinfo=_tz.utc)]
+
+        def clock() -> datetime:
+            return ticks[0]
+
+        mgr = AlertManager(alert_cooldown_seconds=300, clock=clock)
+
+        # Initial UP baseline — no alert.
+        mgr.evaluate(_r("api", Status.UP, 0))
+        # First DOWN transition -> alert fires.
+        first = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert first is not None
+
+        # Recovery -> recovery alert fires (recoveries are NOT deduped —
+        # they signal resolution, which is always worth sending).
+        # Advance time slightly but still within cooldown.
+        ticks[0] = ticks[0] + timedelta(seconds=30)
+        recovery = mgr.evaluate(_r("api", Status.UP, 120))
+        assert recovery is not None
+        assert recovery.alert_type == "recovery"
+
+        # Now flap back to DOWN within the cooldown window.
+        ticks[0] = ticks[0] + timedelta(seconds=30)
+        second = mgr.evaluate(_r("api", Status.DOWN, 180, error="boom"))
+        # Deduplicated: same alert type (DOWN) within 300s.
+        assert second is None
+
+    def test_alert_refires_after_cooldown_expires(self) -> None:
+        """Same alert type refires once cooldown has elapsed.
+
+        The cooldown is measured from the last *fired* alert of that type.
+        A suppressed alert does NOT extend the window, so once enough time
+        passes and a fresh transition occurs, the alert refires.
+        """
+        from datetime import timezone as _tz
+
+        ticks: list[datetime] = [datetime(2026, 1, 1, 12, 0, 0, tzinfo=_tz.utc)]
+
+        def clock() -> datetime:
+            return ticks[0]
+
+        mgr = AlertManager(alert_cooldown_seconds=300, clock=clock)
+
+        mgr.evaluate(_r("api", Status.UP, 0))
+        first = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert first is not None
+
+        # Recovery within cooldown.
+        ticks[0] = ticks[0] + timedelta(seconds=30)
+        mgr.evaluate(_r("api", Status.UP, 120))
+
+        # Second DOWN within cooldown: suppressed.
+        ticks[0] = ticks[0] + timedelta(seconds=30)
+        assert mgr.evaluate(_r("api", Status.DOWN, 180, error="boom")) is None
+
+        # Recovery again, past the original DOWN alert's cooldown.
+        ticks[0] = ticks[0] + timedelta(seconds=300)
+        mgr.evaluate(_r("api", Status.UP, 500))
+
+        # Third DOWN transition — past cooldown from the *first* DOWN alert,
+        # so it should refire.
+        ticks[0] = ticks[0] + timedelta(seconds=10)
+        refired = mgr.evaluate(_r("api", Status.DOWN, 530, error="boom"))
+        assert refired is not None
+        assert refired.alert_type == "down"
+
+    def test_different_alert_types_not_deduplicated(self) -> None:
+        """A DOWN alert should not suppress a subsequent DEGRADED alert
+        for the same service within cooldown — different type means a
+        genuinely new condition worth surfacing."""
+        from datetime import timezone as _tz
+
+        ticks: list[datetime] = [datetime(2026, 1, 1, 12, 0, 0, tzinfo=_tz.utc)]
+
+        def clock() -> datetime:
+            return ticks[0]
+
+        mgr = AlertManager(alert_cooldown_seconds=300, clock=clock)
+
+        mgr.evaluate(_r("api", Status.UP, 0))
+        down = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert down is not None
+
+        # Same moment — but going DEGRADED is a different alert type.
+        degraded = mgr.evaluate(_r("api", Status.DEGRADED, 90, error="slow"))
+        assert degraded is not None
+        assert degraded.alert_type == "degraded"
+

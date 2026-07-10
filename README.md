@@ -23,7 +23,7 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 - **SQLite history** — every check stored, queryable, prunable, and exportable
 - **CSV/JSON export** — pipe-friendly history export with rich filters
 - **Live TUI dashboard** — Rich-powered terminal UI with latency bars, P95/P99 stats
-- **Alerting** — webhook notifications + terminal bell on status changes
+- **Alerting** — webhook notifications + terminal bell on status changes, with configurable cooldown deduplication
 - **Notification channels** — Slack, Discord, Telegram, email (SMTP), and generic JSON webhooks
 - **Incident timeline** — durable, queryable history of every state-change outage with duration tracking
 - **Service groups** — tag services with logical groups, roll up worst-case status per group
@@ -534,6 +534,24 @@ services:
 
 Verify your setup with `pulseboard notify-test` (sends a synthetic DOWN
 alert) and inspect what's wired up with `pulseboard notify-list`.
+
+### Alert deduplication (cooldown)
+
+When a service flaps — UP→DOWN→UP→DOWN repeatedly — every transition is
+a legitimate state change, but you don't usually want to re-page on-call
+for the same problem within a few minutes.
+
+Set `alert_cooldown_seconds` under `settings` to suppress repeat alerts
+of the same type (DOWN, DEGRADED) within a rolling window. The cooldown is
+measured from the last *fired* alert of that type; suppressed alerts do
+not extend the window. Recovery alerts are always sent, regardless of
+cooldown — resolution is always worth surfacing. Set to `0` (the default)
+to disable deduplication entirely.
+
+```yaml
+settings:
+  alert_cooldown_seconds: 300   # don't re-alert the same type within 5 minutes
+```
 
 The email channel sends an RFC 5322 message with a multipart
 plain/HTML body (so Gmail, Outlook, and Apple Mail all render it

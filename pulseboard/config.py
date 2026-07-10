@@ -298,6 +298,7 @@ settings:
   check_interval: 60        # default seconds between checks
   dashboard_refresh: 5      # TUI refresh interval (seconds)
   alert_on_recovery: true
+  alert_cooldown_seconds: 0  # suppress repeat alerts within N seconds (0 = off)
   history_days: 30          # how long to keep check history
 
 services:

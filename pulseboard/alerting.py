@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Dict
 
 import httpx
 
@@ -14,12 +14,27 @@ from .models import CheckResult, Status
 class AlertManager:
     """Manages alert state and dispatches notifications."""
 
-    def __init__(self, alert_on_recovery: bool = True):
+    def __init__(
+        self,
+        alert_on_recovery: bool = True,
+        alert_cooldown_seconds: float = 0.0,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self.alert_on_recovery = alert_on_recovery
+        self.alert_cooldown_seconds = alert_cooldown_seconds
+        self._clock = clock
         self._previous_status: dict[str, Status] = {}
         # Per-service count of consecutive non-UP checks. Incremented on
         # every DOWN or DEGRADED result, reset to 0 when the service is UP.
         self._consecutive_failures: dict[str, int] = {}
+        # Per (service_name, alert_type) timestamp of the last alert fired.
+        # Used to suppress duplicate alerts within the cooldown window.
+        self._last_alert_at: Dict[tuple[str, str], datetime] = {}
+
+    def _now(self) -> datetime:
+        if self._clock is not None:
+            return self._clock()
+        return datetime.now(timezone.utc)
 
     def evaluate(self, result: CheckResult) -> Alert | None:
         """Evaluate a check result and return an Alert if state changed."""
@@ -39,43 +54,83 @@ class AlertManager:
         if prev is None:
             # First check — only alert if down
             if result.status == Status.DOWN:
-                return Alert(
-                    service_name=result.service_name,
-                    alert_type=AlertType.DOWN,
-                    result=result,
-                    message=f"🔴 {result.service_name} is DOWN: {result.error}",
-                    consecutive_failures=failures,
+                return self._maybe_suppress(
+                    result.service_name,
+                    AlertType.DOWN,
+                    Alert(
+                        service_name=result.service_name,
+                        alert_type=AlertType.DOWN,
+                        result=result,
+                        message=f"🔴 {result.service_name} is DOWN: {result.error}",
+                        consecutive_failures=failures,
+                    ),
                 )
             return None
 
         # Status change detection
         if prev != result.status:
             if result.status == Status.DOWN:
-                return Alert(
-                    service_name=result.service_name,
-                    alert_type=AlertType.DOWN,
-                    result=result,
-                    message=f"🔴 {result.service_name} went DOWN: {result.error}",
-                    consecutive_failures=failures,
+                return self._maybe_suppress(
+                    result.service_name,
+                    AlertType.DOWN,
+                    Alert(
+                        service_name=result.service_name,
+                        alert_type=AlertType.DOWN,
+                        result=result,
+                        message=f"🔴 {result.service_name} went DOWN: {result.error}",
+                        consecutive_failures=failures,
+                    ),
                 )
             elif result.status == Status.UP and prev == Status.DOWN:
                 if self.alert_on_recovery:
-                    return Alert(
-                        service_name=result.service_name,
-                        alert_type=AlertType.RECOVERY,
-                        result=result,
-                        message=f"🟢 {result.service_name} recovered ({result.latency_ms:.0f}ms)",
-                        consecutive_failures=failures,
+                    return self._maybe_suppress(
+                        result.service_name,
+                        AlertType.RECOVERY,
+                        Alert(
+                            service_name=result.service_name,
+                            alert_type=AlertType.RECOVERY,
+                            result=result,
+                            message=f"🟢 {result.service_name} recovered ({result.latency_ms:.0f}ms)",
+                            consecutive_failures=failures,
+                        ),
                     )
             elif result.status == Status.DEGRADED:
-                return Alert(
-                    service_name=result.service_name,
-                    alert_type=AlertType.DEGRADED,
-                    result=result,
-                    message=f"🟡 {result.service_name} degraded: {result.error}",
-                    consecutive_failures=failures,
+                return self._maybe_suppress(
+                    result.service_name,
+                    AlertType.DEGRADED,
+                    Alert(
+                        service_name=result.service_name,
+                        alert_type=AlertType.DEGRADED,
+                        result=result,
+                        message=f"🟡 {result.service_name} degraded: {result.error}",
+                        consecutive_failures=failures,
+                    ),
                 )
         return None
+
+    def _maybe_suppress(
+        self, service_name: str, alert_type: str, alert: Alert
+    ) -> Alert | None:
+        """Return the alert unless we already fired an alert of the same
+        type for this service within the cooldown window.
+
+        Recoveries are always passed through: a recovery indicates
+        resolution and the user should see it even if a prior DOWN alert
+        is still inside cooldown.
+        """
+        now = self._now()
+        if alert_type == AlertType.RECOVERY:
+            self._last_alert_at[(service_name, alert_type)] = now
+            return alert
+
+        if self.alert_cooldown_seconds > 0:
+            key = (service_name, alert_type)
+            last = self._last_alert_at.get(key)
+            if last is not None and (now - last).total_seconds() < self.alert_cooldown_seconds:
+                return None
+
+        self._last_alert_at[(service_name, alert_type)] = now
+        return alert
 
     def previous_status(self, service_name: str) -> Status | None:
         """Return the last status observed for a service (or None).
@@ -90,6 +145,7 @@ class AlertManager:
         """Clear all tracked state."""
         self._previous_status.clear()
         self._consecutive_failures.clear()
+        self._last_alert_at.clear()
 
 
 class AlertType(str):

@@ -120,7 +120,10 @@ def watch(config: str | None, once: bool) -> None:
     settings = get_settings(cfg)
     services = parse_services(cfg)
     storage = Storage(settings["db_path"])
-    alerter = AlertManager(alert_on_recovery=settings.get("alert_on_recovery", True))
+    alerter = AlertManager(
+        alert_on_recovery=settings.get("alert_on_recovery", True),
+        alert_cooldown_seconds=settings.get("alert_cooldown_seconds", 0.0),
+    )
     notifier = NotificationDispatcher.from_config(
         settings.get("notification_channels", [])
     )
@@ -210,7 +213,10 @@ def dashboard(config: str | None) -> None:
     settings = get_settings(cfg)
     services = parse_services(cfg)
     storage = Storage(settings["db_path"])
-    alerter = AlertManager(alert_on_recovery=settings.get("alert_on_recovery", True))
+    alerter = AlertManager(
+        alert_on_recovery=settings.get("alert_on_recovery", True),
+        alert_cooldown_seconds=settings.get("alert_cooldown_seconds", 0.0),
+    )
     notifier = NotificationDispatcher.from_config(
         settings.get("notification_channels", [])
     )
