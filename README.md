@@ -579,6 +579,7 @@ pytest
 - New `pulseboard validate-config` command validates configuration without running checks or opening the history database
 - Friendly non-zero errors for malformed YAML, non-mapping roots, invalid service-list shapes, duplicate notification channel names, and service routes that reference unknown notification channels
 - Valid configurations report the parsed service count, making the command suitable for deployment and CI preflight checks
+- New `--timeout N` flag on `pulseboard check` overrides the per-service timeout for a one-shot run — useful for ad-hoc debugging when the config-level timeout is too aggressive (`pulseboard check --timeout 30`)
 
 ### v0.11.0 — Prometheus Metrics Export (2026-07-10)
 - New `pulseboard metrics` CLI command with three modes: **stdout** (default), **textfile** (`-o`/atomic write for node_exporter's textfile collector), and **serve** (HTTP server exposing `/metrics`, `/`, `/healthz` on a configurable host/port)

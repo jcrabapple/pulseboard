@@ -76,7 +76,10 @@ def init(path: str | None) -> None:
 @cli.command()
 @click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
 @click.option("--json", "-j", "as_json", is_flag=True, help="Output as JSON")
-def check(config: str | None, as_json: bool) -> None:
+@click.option("--timeout", "timeout_override", type=int, default=None,
+              help="Override the per-service timeout (seconds) for this run. "
+                   "Useful for ad-hoc debugging when the config-level timeout is too aggressive.")
+def check(config: str | None, as_json: bool, timeout_override: int | None) -> None:
     """Run a one-time health check against all configured services."""
     try:
         cfg = load_config(config)
@@ -88,6 +91,16 @@ def check(config: str | None, as_json: bool) -> None:
     if not services:
         console.print("[yellow]No services configured.[/yellow]")
         sys.exit(0)
+
+    if timeout_override is not None and timeout_override < 1:
+        console.print(
+            f"[red]✗[/red] --timeout must be >= 1 second, got {timeout_override}"
+        )
+        sys.exit(2)
+
+    if timeout_override is not None:
+        for svc in services:
+            svc.timeout = timeout_override
 
     # Use the threshold-aware runner so dependency-impact is applied.
     # History is empty here, so error-rate thresholds are no-ops — but
