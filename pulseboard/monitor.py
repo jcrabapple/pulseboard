@@ -30,9 +30,21 @@ async def check_http(service: ServiceConfig) -> CheckResult:
             resp = await client.get(service.url, headers=service.headers)
             elapsed_ms = (time.monotonic() - start) * 1000
 
+            is_rate_limited = resp.status_code == 429
             if resp.status_code == service.expected_status:
                 status = Status.UP
                 error = None
+            elif is_rate_limited:
+                # HTTP 429 Too Many Requests — the target is rate-limiting
+                # us. Treat this as DEGRADED (not DOWN): the service is
+                # healthy, but our polling is being throttled. Surface the
+                # Retry-After hint so callers (watch/dashboard) can back off
+                # in a future iteration.
+                status = Status.DEGRADED
+                retry_after_raw = resp.headers.get("retry-after")
+                error = "HTTP 429 Too Many Requests"
+                if retry_after_raw is not None:
+                    error += f" (retry after {retry_after_raw}s)"
             elif 500 <= resp.status_code < 600:
                 status = Status.DOWN
                 error = f"HTTP {resp.status_code}"
@@ -44,6 +56,17 @@ async def check_http(service: ServiceConfig) -> CheckResult:
                 "content_length": len(resp.content),
                 "url": str(resp.url),
             }
+
+            if is_rate_limited:
+                details["rate_limited"] = True
+                retry_after_raw = resp.headers.get("retry-after")
+                if retry_after_raw is not None:
+                    try:
+                        details["retry_after_seconds"] = int(retry_after_raw)
+                    except ValueError:
+                        # Non-integer Retry-After (e.g. HTTP-date) — skip
+                        # the numeric hint but still flag as rate-limited.
+                        pass
 
             # Body content validation runs whenever checks are configured.
             # An empty or undecodable body is still meaningful: required
