@@ -25,7 +25,7 @@ async def check_http(service: ServiceConfig) -> CheckResult:
         async with httpx.AsyncClient(
             timeout=service.timeout,
             follow_redirects=True,
-            verify=False,
+            verify=True,
         ) as client:
             resp = await client.get(service.url, headers=service.headers)
             elapsed_ms = (time.monotonic() - start) * 1000
