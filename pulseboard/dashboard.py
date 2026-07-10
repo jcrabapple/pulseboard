@@ -288,6 +288,58 @@ def build_dns_table(results: list[CheckResult]) -> Table:
     return table
 
 
+def build_groups_table(summaries) -> Table:
+    """Render a service-groups roll-up table.
+
+    Each group is rendered as a single row with the worst-case status
+    (with emoji + color), member counts (up / degraded / down / unknown),
+    and total count. The member list itself is rendered underneath using
+    a second row with a continuation row style.
+    """
+    from .groups import GroupSummary
+
+    table = Table(
+        title="⚡ PulseBoard — Service Groups",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Group", style="bold", min_width=12)
+    table.add_column("Status", width=12, justify="center")
+    table.add_column("Counts", justify="right", width=22)
+    table.add_column("Members", min_width=8)
+
+    sorted_summaries: list[GroupSummary] = sorted(
+        summaries, key=lambda g: g.name,
+    )
+
+    for idx, gs in enumerate(sorted_summaries):
+        assert isinstance(gs, GroupSummary)
+        status_label = Text(
+            status_emoji(gs.status) + " " + gs.status.value.upper(),
+            style=status_style(gs.status),
+        )
+        counts = (
+            f"[green]{gs.up} up[/green] / "
+            f"[yellow]{gs.degraded} deg[/yellow] / "
+            f"[red]{gs.down} down[/red] / "
+            f"[dim]{gs.unknown} ?[/dim]"
+        )
+        members = ", ".join(sorted(gs.services)) or "[dim]—[/dim]"
+        total = gs.up + gs.degraded + gs.down + gs.unknown
+        table.add_row(
+            gs.name,
+            status_label,
+            f"{counts}  [dim]({total})[/dim]",
+            members,
+        )
+        if idx != len(sorted_summaries) - 1:
+            # Thin separator between groups without consuming a row.
+            table.add_section()
+    return table
+
+
 def build_incident_table(incidents: list) -> Table:
     """Render an incident-timeline table.
 

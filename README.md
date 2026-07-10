@@ -26,6 +26,8 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 - **Alerting** — webhook notifications + terminal bell on status changes
 - **Notification channels** — Slack, Discord, Telegram, email (SMTP), and generic JSON webhooks
 - **Incident timeline** — durable, queryable history of every state-change outage with duration tracking
+- **Service groups** — tag services with logical groups, roll up worst-case status per group
+- **Dependency tracking** — declare `depends_on` to suppress misleading "down" alerts when the real failure is upstream
 - **YAML config** — simple, human-readable service definitions
 - **Percentile latency** — P95, P99, min, max tracked per service
 - **Auto-pruning** — configurable history retention
@@ -58,25 +60,25 @@ pulseboard dashboard
 # 6. View status from history
 pulseboard status --hours 24
 
-# 8. Prune old records
+# 7. Prune old records
 pulseboard prune --days 30
 
-# 9. Check SSL certificate expiry for SSL services
+# 11. Check SSL certificate expiry for SSL services
 pulseboard certs                    # all SSL services
 pulseboard certs --days 30          # only show certs expiring within 30 days
 pulseboard certs --json             # JSON output
 
-# 10. Validate HTTP response bodies (substr/regex/jsonpath)
+# 12. Validate HTTP response bodies (substr/regex/jsonpath)
 pulseboard validate
 pulseboard validate --json
 
-# 11. Export check history (defaults to CSV on stdout)
+# 13. Export check history (defaults to CSV on stdout)
 pulseboard export
 pulseboard export -o history.csv
 pulseboard export -o history.json
 pulseboard export -s "GitHub" --hours 24
 
-# 12. View the incident timeline (durable across restarts)
+# 14. View the incident timeline (durable across restarts)
 pulseboard incidents                # last 24h of outages (default sort: newest first)
 pulseboard incidents --hours 168    # last 7 days
 pulseboard incidents -s "GitHub"    # filter to a service
@@ -84,6 +86,12 @@ pulseboard incidents --type down    # only DOWN incidents (skip DEGRADED)
 pulseboard incidents --open         # only show ongoing outages
 pulseboard incidents --summary      # aggregate counts / total downtime / MTTR
 pulseboard incidents --json         # machine-readable
+
+# 15. View service groups and the dependency graph
+pulseboard groups                   # roll-up table of all groups
+pulseboard groups --json            # JSON payload (groups + member lists)
+pulseboard groups --graph           # print the dependency graph (topo order)
+pulseboard groups --group production  # focus on one group
 ```
 
 ## Configuration
@@ -129,6 +137,19 @@ services:
     body_not_contains: "\"major\""
     json_path: status.indicator
     json_path_expected: none
+
+  # Group membership — multiple groups per service, group names are free-form
+  - name: API
+    url: https://api.example.com
+    groups: [production, backend]
+    interval: 30
+
+  # Dependency tracking — a service is downgraded when its dependency fails
+  - name: Admin UI
+    url: https://admin.example.com
+    groups: [production, frontend]
+    depends_on: [API]                          # fails when API is DOWN
+    interval: 60
 ```
 
 ### HTTP Body Content Validation
@@ -202,6 +223,7 @@ A DOWN status from the underlying check is never upgraded by thresholds.
 | `pulseboard notify-test` | Send a synthetic alert through every configured notification channel |
 | `pulseboard notify-list` | List configured notification channels |
 | `pulseboard incidents` | View the incident timeline (durable state-change history) |
+| `pulseboard groups` | Show service-group roll-up and the dependency graph |
 | `pulseboard prune` | Clean old records |
 | `pulseboard config-path` | Show config file location |
 
@@ -245,6 +267,95 @@ The `incidents` table is schema-migrated automatically on first
 launch. The schema also includes a partial index on
 `(service_name) WHERE ended_at IS NULL` so the "what's still
 broken right now" query stays fast as the history grows.
+
+## Service Groups & Dependencies
+
+For larger setups you'll want to roll up dozens of services into a
+handful of logical groups (e.g. `production`, `external`, `infrastructure`)
+and tell PulseBoard which services depend on which, so a database
+failure doesn't generate N downstream alerts.
+
+```yaml
+services:
+  - name: API
+    url: https://api.example.com/health
+    groups: [production, backend]
+  - name: Admin UI
+    url: https://admin.example.com
+    groups: [production, frontend]
+    depends_on: [API]                   # Admin UI requires API
+  - name: Postgres
+    url: https://db.example.com
+    groups: [infrastructure, backend]
+  - name: Redis
+    url: https://redis.example.com
+    groups: [infrastructure, backend]
+  - name: Marketing Site
+    url: https://blog.example.com
+    groups: [production, frontend]
+```
+
+The `pulseboard groups` command renders a roll-up table by worst-case
+status (any DOWN → group DOWN), plus a topological dependency graph:
+
+```bash
+pulseboard groups                      # table of group roll-ups
+pulseboard groups --group production  # focus on one group
+pulseboard groups --json               # machine-readable
+pulseboard groups --graph              # topologically-sorted graph
+```
+
+Output (text mode) looks like:
+
+```
+⚡ PulseBoard — Service Groups
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ Group         ┃    Status   ┃ Counts             ┃ Members         ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ backend       │   🟢 UP     │ 0 up / 0 deg /     │ API, Postgres   │
+│               │             │ 0 down / 0 ?  (2)  │                 │
+├───────────────┼─────────────┼───────────────────┼─────────────────┤
+│ frontend      │   🟢 UP     │ 0 up / 0 deg /     │ Admin UI,       │
+│               │             │ 0 down / 0 ?  (2)  │ Marketing Site  │
+├───────────────┼─────────────┼───────────────────┼─────────────────┤
+│ infrastructure│   🟢 UP     │ 0 up / 0 deg /     │ Postgres, Redis │
+│               │             │ 0 down / 0 ?  (2)  │                 │
+├───────────────┼─────────────┼───────────────────┼─────────────────┤
+│ production    │   🟢 UP     │ 0 up / 0 deg /     │ Admin UI, API,  │
+│               │             │ 0 down / 0 ?  (3)  │ Marketing Site  │
+└───────────────┴─────────────┴───────────────────┴─────────────────┘
+```
+
+`pulseboard groups --graph` prints one line per service in topological
+order (deps first):
+
+```
+⚡ PulseBoard — Dependency Graph
+  API          (no dependencies)
+  Postgres     (no dependencies)
+  Redis        (no dependencies)
+  Admin UI  -> API
+```
+
+Dependency impact is applied *automatically* during `pulseboard watch`
+and `pulseboard dashboard` (and `pulseboard check` since v0.10.0):
+
+- If a dependency is **DOWN**, the dependent is downgraded to **DOWN**
+  (even if the dependent itself appears healthy). The original status is
+  preserved in `details["original_status"]` and the failing dependency
+  is recorded in `details["dependency_impact"]`.
+- If a dependency is **DEGRADED**, the dependent is downgraded to
+  **DEGRADED** (but never to DOWN).
+- A service that is already DOWN is never upgraded by a healthy
+  dependency — downstream failure masks an upstream problem
+  intentionally, so the user sees both.
+
+The graph is validated for cycles at config-load time (a config like
+`A depends_on B; B depends_on A` is rejected with a clear error), and
+only **immediate** dependencies are evaluated — there is no transitive
+cascading. This keeps alerts honest: a single broken component shows up
+as itself plus its direct dependents, never as a sweeping "everything
+down" event.
 
 ## Notification Channels
 
@@ -312,6 +423,18 @@ pytest
 ```
 
 ## Changelog
+
+### v0.10.0 — Service Groups & Dependency Tracking (2026-07-09)
+- New `pulseboard groups` CLI command with three modes: roll-up table (default), `--graph` (topological dependency view), and `--json`
+- `--group <name>` filter focuses the output on a single group
+- `pulseboard.groups` module wired into `pulseboard check`, `pulseboard watch`, and `pulseboard dashboard` — dependent services are now annotated and downgraded when their declared `depends_on` targets fail
+- Dependency impact rules: DOWN dependency → dependent DOWN, DEGRADED dependency → dependent DEGRADED (max upgrade: never above UP), service already DOWN is never upgraded
+- Failed dependencies recorded in `details["dependency_impact"]` (with name, status, and error); the original status is preserved in `details["original_status"]`
+- Cycle detection in the dependency graph at config-load time (a config with `A depends_on B; B depends_on A` is rejected with a clear error)
+- Only immediate dependencies are evaluated — no transitive cascading, so a single upstream failure surfaces as itself plus its direct dependents
+- New `build_groups_table()` in `pulseboard.dashboard` renders the roll-up Rich table with status emoji + color, counts (up / degraded / down / unknown), and member list
+- New `tests/test_groups.py` with 45 tests covering GroupSummary aggregation, group roll-up construction, topological sort, dependency graph description, dependency-impact annotation/downgrade (UP→DOWN, UP→DEGRADED, DOWN→DOWN preserved, DEGRADED+down→DOWN escalated), and full CLI behavior for `groups`, `--graph`, `--group`, `--json`
+- Removed stray `groups.py` at the project root that predated the module being moved into `pulseboard/groups.py` (was tracked but unused)
 
 ### v0.9.0 — Incident Timeline (2026-07-09)
 - New `incidents` table in SQLite: every UP→non-UP transition opens an incident row, every non-UP→UP closes it
@@ -416,9 +539,9 @@ pytest
 - [x] Export/import history (CSV, JSON)
 - [x] Notification channels (Slack, Discord, Telegram, email, generic webhook)
 - [x] Incident timeline view
+- [x] Service groups and dependency tracking
 - [ ] Grafana/Prometheus metrics export
 - [ ] Web UI dashboard
-- [ ] Service groups and dependency tracking
 
 ## License
 

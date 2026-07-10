@@ -29,6 +29,7 @@ from .dashboard import (
     build_cert_table,
     build_content_validation_table,
     build_dns_table,
+    build_groups_table,
     build_overview_table,
     console,
     print_status_line,
@@ -45,6 +46,7 @@ from .groups import (
     build_group_summaries,
     describe_dependency_graph,
     get_dependency_graph,
+    list_services_in_group,
     topological_sort,
 )
 
@@ -85,7 +87,11 @@ def check(config: str | None, as_json: bool) -> None:
         console.print("[yellow]No services configured.[/yellow]")
         sys.exit(0)
 
-    results = asyncio.run(run_all_checks(services))
+    # Use the threshold-aware runner so dependency-impact is applied.
+    # History is empty here, so error-rate thresholds are no-ops — but
+    # the dependency graph is still honored (a DOWN dependency downgrades
+    # its dependents, even on a one-shot check).
+    results = asyncio.run(run_all_checks_with_thresholds(services))
 
     if as_json:
         import json
@@ -907,6 +913,131 @@ def metrics(
         click.echo(exporter.render(), nl=False)
     finally:
         storage.close()
+
+
+@cli.command()
+@click.option(
+    "--config", "-c", type=click.Path(), default=None, help="Config file path."
+)
+@click.option(
+    "--group",
+    "group_name",
+    default=None,
+    help="Show only the named group. Default: show all groups.",
+)
+@click.option(
+    "--graph",
+    is_flag=True,
+    help="Show the dependency graph (which services depend on what) "
+    "instead of the group roll-up table.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as JSON (object with a 'groups' list).",
+)
+def groups(
+    config: str | None,
+    group_name: str | None,
+    graph: bool,
+    as_json: bool,
+) -> None:
+    """Show rolled-up service health per group and the dependency graph.
+
+    Groups are declared on each service with a ``groups: [name, ...]`` list.
+    A group's status is the worst-case status of its members (any DOWN
+    makes the whole group DOWN). When *any* dependency declared via
+    ``depends_on`` is not UP, the dependent service is downgraded before
+    the roll-up is computed, so a single upstream failure can't disguise
+    itself as N independent outages.
+
+    Use ``--graph`` to print a topological view of the dependency graph
+    (``api -> database``), or pass ``--json`` for machine-readable
+    output. Combine with ``--group <name>`` to focus on a single group.
+    """
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    services = parse_services(cfg)
+
+    # Validate `--group` if provided.
+    if group_name is not None:
+        all_names = {g for s in services for g in (s.groups or [])}
+        # Also allow filtering by group name even if the group isn't in
+        # any current service's groups list — we just show an empty result.
+        del all_names  # kept for documentation; we always return an empty
+                       # result rather than erroring, so users can pipe
+                       # with confidence.
+
+    if graph:
+        text = describe_dependency_graph(services)
+        if not text:
+            console.print("[yellow]No services configured.[/yellow]")
+        else:
+            console.print(
+                "[bold cyan]⚡ PulseBoard — Dependency Graph[/bold cyan]"
+            )
+            console.print(text)
+        return
+
+    if not services:
+        if as_json:
+            click.echo(json.dumps({"groups": []}, indent=2))
+        else:
+            console.print("[yellow]No services configured.[/yellow]")
+        return
+
+    # If the user filtered to a specific group, restrict member services
+    # so the JSON / table only describe that one group.
+    if group_name is not None:
+        services_for_summary = list_services_in_group(services, group_name)
+    else:
+        services_for_summary = services
+
+    # No groups declared at all.
+    if not services_for_summary and all(not (s.groups or []) for s in services):
+        msg = "[yellow]No service groups configured.[/yellow] "\
+              "Set `groups: [name, ...]` on at least one service."
+        if as_json:
+            click.echo(json.dumps({"groups": []}, indent=2))
+        else:
+            console.print(msg)
+        return
+
+    # The roll-up is computed against `None` (no live results here) — it
+    # is purely a roster view. Live status counts come from `pulseboard
+    # status` or the dashboard. We deliberately do NOT run live checks
+    # from this command (it stays cheap and configuration-only).
+    summaries = build_group_summaries(services_for_summary, None)
+
+    if as_json:
+        payload = {
+            "groups": [s.to_dict() for s in summaries],
+            "filter": group_name,
+        }
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    if not summaries:
+        console.print(
+            f"[yellow]No services match group '{group_name}'.[/yellow]"
+        )
+        return
+
+    console.print(build_groups_table(summaries))
+
+    # When more than one group exists, add a small footer so the output
+    # is self-explanatory. The dependency graph is always available via
+    # `--graph` for those who want it.
+    if len(summaries) > 1:
+        console.print(
+            "\n[dim]Pass --group <name> to focus on one group, "
+            "or --graph to view the dependency graph.[/dim]"
+        )
 
 
 if __name__ == "__main__":

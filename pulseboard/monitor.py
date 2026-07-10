@@ -15,6 +15,7 @@ from .content_check import has_content_checks, validate_body
 from .dns_check import check_dns
 from .ssl_check import check_ssl
 from .thresholds import evaluate_thresholds
+from .groups import apply_dependency_impact
 
 
 async def check_http(service: ServiceConfig) -> CheckResult:
@@ -191,8 +192,23 @@ async def run_all_checks_with_thresholds(
     services: list[ServiceConfig],
     history_provider: HistoryProvider | None = None,
 ) -> list[CheckResult]:
-    """Run checks against all services concurrently, applying thresholds."""
+    """Run checks against all services concurrently, applying thresholds.
+
+    After all checks complete, :func:`pulseboard.groups.apply_dependency_impact`
+    is run so that dependent services whose dependencies are not UP are
+    annotated and (conservatively) downgraded. Services are gathered
+    concurrently, so dependency ordering does not need to be enforced at
+    scheduling time — ``apply_dependency_impact`` reads statuses from
+    the fully-populated result set in a single pass.
+
+    The returned list preserves the caller's original ``services`` order
+    so callers don't need to sort by name when iterating.
+    """
+    if not services:
+        return []
     tasks = [
         run_check_with_thresholds(svc, history_provider) for svc in services
     ]
-    return await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
+    apply_dependency_impact(services, results)
+    return results
