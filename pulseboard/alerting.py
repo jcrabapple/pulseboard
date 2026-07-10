@@ -176,6 +176,7 @@ class Alert:
         return {
             "service_name": self.service_name,
             "type": self.alert_type,
+            "status": self.result.status.value,
             "message": self.message,
             "timestamp": self.timestamp.isoformat(),
             "latency_ms": self.result.latency_ms,

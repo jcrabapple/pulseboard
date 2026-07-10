@@ -571,6 +571,7 @@ pytest
 ## Changelog
 
 ### Unreleased
+- Webhook and notification payloads now include `status` — the raw service status value (`up`, `down`, `degraded`) — so external systems don't have to reverse-engineer it from the alert type string
 - Webhook and notification payloads now include `consecutive_failures` — the count of consecutive non-UP checks for the service — so external systems can escalate after N failures
 - HTTP content validation now treats an empty or undecodable response body as validation input, so required substrings, regexes, and JSON paths fail instead of being silently skipped
 - HTTP checks now verify HTTPS certificates against the system trust store instead of silently accepting invalid or forged certificates

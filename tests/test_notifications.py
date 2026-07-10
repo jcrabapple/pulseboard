@@ -182,12 +182,26 @@ class TestWebhookRenderer:
         payload = render_webhook_payload(alert)
         expected_keys = {
             "service_name", "type", "message", "timestamp", "latency_ms", "error",
-            "consecutive_failures",
+            "consecutive_failures", "status",
         }
         assert set(payload.keys()) == expected_keys
         assert payload["service_name"] == "GitHub"
         assert payload["type"] == "down"
         assert payload["consecutive_failures"] == 0
+
+    def test_payload_includes_service_status(self):
+        """The webhook payload must carry the raw service status value
+        so external systems don't have to reverse-engineer it from the
+        alert type string."""
+        alert = _make_alert(status=Status.DEGRADED, alert_type="degraded")
+        payload = render_webhook_payload(alert)
+        assert payload["status"] == "degraded"
+
+    def test_payload_status_reflects_up_on_recovery(self):
+        """A recovery alert must report status 'up', not 'recovery'."""
+        alert = _make_alert(status=Status.UP, alert_type="recovery")
+        payload = render_webhook_payload(alert)
+        assert payload["status"] == "up"
 # ---------------------------------------------------------------------------
 # NotificationChannel dataclass & validation
 # ---------------------------------------------------------------------------
