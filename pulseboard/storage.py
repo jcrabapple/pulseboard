@@ -21,7 +21,13 @@ class Storage:
     @property
     def conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
+            # check_same_thread=False so the metrics exporter can
+            # safely read this Storage from the ThreadingHTTPServer's
+            # worker threads. WAL mode + a single writer (the monitor)
+            # means concurrent reads are safe.
+            self._conn = sqlite3.connect(
+                str(self.db_path), check_same_thread=False
+            )
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -218,6 +224,63 @@ class Storage:
             "SELECT DISTINCT service_name FROM checks"
         ).fetchall()
         return [self.get_summary(r["service_name"], hours) for r in rows]
+
+    def count_checks(self, service_name: str | None = None) -> int:
+        """Return the total number of stored check rows.
+
+        When ``service_name`` is provided, count only that service's
+        rows. Used by the metrics exporter for lifetime counters.
+        """
+        if service_name is None:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM checks"
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM checks WHERE service_name = ?",
+                (service_name,),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_checks_by_service(self) -> dict[str, int]:
+        """Return a mapping of ``service_name -> lifetime check count``.
+
+        Used by the metrics exporter for ``pulseboard_checks_total``.
+        """
+        rows = self.conn.execute(
+            """SELECT service_name, COUNT(*) AS n FROM checks
+               GROUP BY service_name"""
+        ).fetchall()
+        return {r["service_name"]: int(r["n"]) for r in rows}
+
+    def count_open_incidents_by_service(self) -> dict[str, int]:
+        """Return a mapping of ``service_name -> open incident count``.
+
+        Used by the metrics exporter for ``pulseboard_open_incidents``.
+        """
+        rows = self.conn.execute(
+            """SELECT service_name, COUNT(*) AS n FROM incidents
+               WHERE ended_at IS NULL
+               GROUP BY service_name"""
+        ).fetchall()
+        return {r["service_name"]: int(r["n"]) for r in rows}
+
+    def count_incidents(self, service_name: str | None = None) -> int:
+        """Return the total number of stored incidents.
+
+        When ``service_name`` is provided, count only that service's
+        incidents.
+        """
+        if service_name is None:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM incidents"
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM incidents WHERE service_name = ?",
+                (service_name,),
+            ).fetchone()
+        return int(row["n"]) if row else 0
 
     def prune(self, days: int = 30) -> int:
         """Delete check results older than N days. Returns count deleted."""

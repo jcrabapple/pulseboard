@@ -49,7 +49,7 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
     missing or contain invalid values.
     """
     services: list[ServiceConfig] = []
-    for entry in raw.get("services", []):
+    for entry in raw.get("services") or []:
         stype = ServiceType(entry.get("type", "http"))
 
         # DNS-specific validation
@@ -121,6 +121,29 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 f"Service '{sname}': alert_channels must be a list of strings"
             )
 
+        # groups must be a list of non-empty strings; reject other shapes.
+        groups_raw = entry.get("groups", [])
+        if not isinstance(groups_raw, list) or not all(
+            isinstance(x, str) and x.strip() for x in groups_raw
+        ):
+            raise ConfigError(
+                f"Service '{sname}': groups must be a list of non-empty strings"
+            )
+
+        # depends_on must be a list of non-empty strings (service names).
+        deps_raw = entry.get("depends_on", [])
+        if not isinstance(deps_raw, list) or not all(
+            isinstance(x, str) and x.strip() for x in deps_raw
+        ):
+            raise ConfigError(
+                f"Service '{sname}': depends_on must be a list of non-empty strings"
+            )
+        # A service cannot depend on itself — trivial but easy to typo.
+        if sname in deps_raw:
+            raise ConfigError(
+                f"Service '{sname}': depends_on must not include itself"
+            )
+
         svc = ServiceConfig(
             name=entry["name"],
             url=entry.get("url", ""),
@@ -130,6 +153,8 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             expected_status=entry.get("expected_status", 200),
             headers=entry.get("headers", {}),
             tags=entry.get("tags", []),
+            groups=list(groups_raw),
+            depends_on=list(deps_raw),
             alert_webhook=entry.get("alert_webhook"),
             alert_channels=list(ac_raw),
             host=entry.get("host"),
@@ -172,7 +197,66 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             ),
         )
         services.append(svc)
+
+    # Validate the dependency graph: every depends_on target must exist
+    # (typo guard) and the graph must be acyclic.
+    _validate_dependency_graph(services)
+
     return services
+
+
+def _validate_dependency_graph(services: list[ServiceConfig]) -> None:
+    """Check that every ``depends_on`` target exists and no cycles exist.
+
+    Raises :class:`ConfigError` on the first problem it finds. Errors are
+    intentionally phrased so users can fix the config without reading code.
+    """
+    by_name = {s.name: s for s in services}
+
+    # 1) Every target must exist.
+    for svc in services:
+        for dep in svc.depends_on:
+            if dep not in by_name:
+                raise ConfigError(
+                    f"Service '{svc.name}': depends_on references unknown "
+                    f"service '{dep}'"
+                )
+
+    # 2) Detect cycles via DFS. We don't need a full topological order —
+    # just to surface the cycle path with service names so the user can
+    # fix the config.
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {s.name: WHITE for s in services}
+    parent: dict[str, str | None] = {s.name: None for s in services}
+
+    def visit(node: str) -> list[str] | None:
+        """DFS from ``node``. Returns the cycle path if a back-edge is found, else None."""
+        color[node] = GRAY
+        for dep in by_name[node].depends_on:
+            if color[dep] == GRAY:
+                # Back edge: walk parent chain from node -> ... -> dep
+                path = [dep, node]
+                cur: str | None = parent[node]
+                while cur is not None and cur != dep:
+                    path.append(cur)
+                    cur = parent[cur]
+                path.append(dep)  # close the loop visually
+                return list(reversed(path))
+            if color[dep] == WHITE:
+                parent[dep] = node
+                cycle = visit(dep)
+                if cycle is not None:
+                    return cycle
+        color[node] = BLACK
+        return None
+
+    for svc in services:
+        if color[svc.name] == WHITE:
+            cycle = visit(svc.name)
+            if cycle is not None:
+                raise ConfigError(
+                    "Dependency cycle detected: " + " -> ".join(cycle)
+                )
 
 
 def get_settings(raw: dict[str, Any]) -> dict[str, Any]:

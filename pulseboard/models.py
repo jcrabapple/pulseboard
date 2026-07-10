@@ -157,6 +157,15 @@ class ServiceConfig:
     expected_status: int = 200
     headers: dict[str, str] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+    # Optional logical group(s) this service belongs to. Groups are
+    # free-form labels (e.g. "production", "infrastructure", "external")
+    # and are surfaced via ``pulseboard groups`` for roll-up views.
+    groups: list[str] = field(default_factory=list)
+    # Optional list of service names that this service depends on. When
+    # any dependency is not UP, the dependent service's check is annotated
+    # with ``details["dependency_impact"]`` and may be downgraded — see
+    # :mod:`pulseboard.groups` for the full rule set.
+    depends_on: list[str] = field(default_factory=list)
     alert_webhook: str | None = None
     # Optional list of NotificationChannel names (looked up in the global
     # settings.notification_channels registry) that should receive alerts
@@ -197,6 +206,10 @@ class ServiceConfig:
 
     def has_any_threshold(self) -> bool:
         return self.has_latency_thresholds() or self.has_error_rate_thresholds()
+
+    def has_dependencies(self) -> bool:
+        """Return True if this service declares any ``depends_on`` entries."""
+        return bool(self.depends_on)
 
 
 @dataclass

@@ -39,6 +39,14 @@ from .models import ServiceType, Status
 from .storage import Storage
 from .content_check import has_content_checks
 from .export import infer_format, write_export, write_export_stream
+from .metrics import MetricsExporter, serve_metrics
+from .groups import (
+    apply_dependency_impact,
+    build_group_summaries,
+    describe_dependency_graph,
+    get_dependency_graph,
+    topological_sort,
+)
 
 
 @click.group()
@@ -769,6 +777,136 @@ def notify_list(config: str | None, as_json: bool) -> None:
                         target = f"{scheme}://{rest[:8]}…{rest[-6:]}"
             table.add_row(c.name, c.channel_type.value, target)
         console.print(table)
+
+
+@cli.command()
+@click.option(
+    "--config", "-c", type=click.Path(), default=None, help="Config file path."
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help=(
+        "Write the Prometheus text payload to this file (textfile mode). "
+        "Parent directories are created as needed. Mutually exclusive with "
+        "--serve."
+    ),
+)
+@click.option(
+    "--serve",
+    is_flag=True,
+    help=(
+        "Run an HTTP server exposing /metrics, /, and /healthz instead of "
+        "writing to stdout or a file. Combine with --port / --host to "
+        "control the bind address."
+    ),
+)
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Bind host for --serve mode. Default: 127.0.0.1 (loopback only).",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=9464,
+    help="Bind port for --serve mode. Default: 9464 (the IANA-registered "
+    "Prometheus default port range).",
+)
+@click.option(
+    "--hours",
+    type=int,
+    default=24,
+    help="Time window for windowed aggregates (uptime, latency stats).",
+)
+def metrics(
+    config: str | None,
+    output: str | None,
+    serve: bool,
+    host: str,
+    port: int,
+    hours: int,
+) -> None:
+    """Export check history as Prometheus metrics.
+
+    By default the rendered text payload is written to stdout — pipe
+    it to ``curl --data-binary @-`` against a Pushgateway, or capture
+    it into a file for inspection.
+
+    Three modes are supported:
+
+    \b
+      - stdout (default)        emit the payload to standard output.
+      - textfile (--output)     atomically write the payload to a file,
+                                suitable for node_exporter's
+                                --collector.textfile.directory.
+      - serve   (--serve)       run an HTTP server exposing
+                                /metrics, /, and /healthz endpoints.
+
+    Metric families are documented in :mod:`pulseboard.metrics`.
+    """
+    if serve and output:
+        console.print(
+            "[red]✗[/red] --serve and --output are mutually exclusive."
+        )
+        sys.exit(2)
+
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    settings = get_settings(cfg)
+
+    # Build a resolver that maps service name -> ServiceType.value
+    # using the parsed config. Services with no stored checks fall
+    # back to "unknown" via the metrics module.
+    services = parse_services(cfg)
+    type_by_name: dict[str, str] = {
+        s.name: s.service_type.value for s in services
+    }
+
+    def _resolve_service_type(name: str) -> str:
+        return type_by_name.get(name, "unknown")
+
+    storage = Storage(settings["db_path"])
+    try:
+        exporter = MetricsExporter(
+            storage=storage,
+            hours=hours,
+            service_type_resolver=_resolve_service_type,
+        )
+
+        if serve:
+            console.print(
+                f"[green]✓[/green] Serving Prometheus metrics on "
+                f"[cyan]http://{host}:{port}/[/cyan] "
+                f"([dim]Ctrl+C to stop[/dim])"
+            )
+            try:
+                serve_metrics(exporter, host=host, port=port)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Stopped.[/yellow]")
+            except OSError as e:
+                console.print(f"[red]✗[/red] Failed to bind {host}:{port}: {e}")
+                sys.exit(1)
+            return
+
+        if output:
+            n = exporter.write_textfile(output)
+            console.print(
+                f"[green]✓[/green] Wrote [bold]{n}[/bold] samples to "
+                f"[cyan]{output}[/cyan]"
+            )
+            return
+
+        # Default: stdout.
+        click.echo(exporter.render(), nl=False)
+    finally:
+        storage.close()
 
 
 if __name__ == "__main__":
