@@ -45,15 +45,17 @@ async def check_http(service: ServiceConfig) -> CheckResult:
                 "url": str(resp.url),
             }
 
-            # Body content validation — only meaningful if the request
-            # actually returned a body and the user configured checks.
+            # Body content validation runs whenever checks are configured.
+            # An empty or undecodable body is still meaningful: required
+            # substrings, regexes, and JSON paths must fail rather than be
+            # silently skipped.
             body_text = ""
             try:
                 body_text = resp.text
             except Exception:  # pragma: no cover - decoding rarely fails
                 body_text = ""
 
-            if has_content_checks(service) and body_text:
+            if has_content_checks(service):
                 report = validate_body(service, body_text, resp.headers.get("content-type"))
                 details["content_checks"] = report.checks
                 if not report.passed and status == Status.UP:

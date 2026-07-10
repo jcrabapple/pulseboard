@@ -327,6 +327,22 @@ class TestCheckHttpIntegration:
         assert json_check["value_matches_expected"] is False
         assert "json_path" in (result.error or "")
 
+    def test_empty_body_fails_required_content_check(self) -> None:
+        svc = make_http_service(body_contains="healthy")
+        resp = self._mock_response(200, "")
+
+        async def _run() -> CheckResult:
+            with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=resp)):
+                return await check_http(svc)
+
+        result = asyncio.run(_run())
+
+        assert result.status == Status.DEGRADED
+        assert result.details["content_checks"] == [
+            {"check": "body_contains", "expected": "healthy", "passed": False}
+        ]
+        assert "missing required substring" in (result.error or "")
+
     def test_500_response_stays_down_but_records_body_checks(self) -> None:
         # A 5xx is a hard DOWN, but the body check is still recorded in
         # details so users can see *why* the server failed (e.g. "outage"
