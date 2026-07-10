@@ -198,6 +198,15 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
         )
         services.append(svc)
 
+    # Service names are stable identifiers throughout storage, dependency
+    # resolution, alert routing, and metrics labels. Duplicates make those
+    # operations ambiguous, so reject them before validating the graph.
+    seen_names: set[str] = set()
+    for service in services:
+        if service.name in seen_names:
+            raise ConfigError(f"Duplicate service name '{service.name}'")
+        seen_names.add(service.name)
+
     # Validate the dependency graph: every depends_on target must exist
     # (typo guard) and the graph must be acyclic.
     _validate_dependency_graph(services)
