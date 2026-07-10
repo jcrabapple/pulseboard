@@ -553,6 +553,7 @@ pytest
 ## Changelog
 
 ### Unreleased
+- JSON check output now includes the full `details` object, exposing DNS answers, SSL certificate metadata, content-validation outcomes, threshold violations, and dependency impact to scripts and integrations
 - New `pulseboard validate-config` command validates configuration without running checks or opening the history database
 - Friendly non-zero errors for malformed YAML, non-mapping roots, invalid service-list shapes, duplicate notification channel names, and service routes that reference unknown notification channels
 - Valid configurations report the parsed service count, making the command suitable for deployment and CI preflight checks

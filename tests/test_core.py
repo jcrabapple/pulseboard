@@ -21,6 +21,22 @@ def test_check_result_to_dict():
     assert d["status_code"] == 200
 
 
+def test_check_result_to_dict_includes_diagnostic_details():
+    details = {
+        "answers": ["192.0.2.1"],
+        "content_checks": [{"check": "body_contains", "passed": True}],
+    }
+    result = CheckResult(
+        service_name="diagnostic",
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        status=Status.UP,
+        latency_ms=12.5,
+        details=details,
+    )
+
+    assert result.to_dict()["details"] == details
+
+
 def test_check_result_is_up():
     assert CheckResult("x", datetime.now(timezone.utc), Status.UP, 10).is_up
     assert not CheckResult("x", datetime.now(timezone.utc), Status.DOWN, 10).is_up

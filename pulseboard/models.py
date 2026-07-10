@@ -229,6 +229,7 @@ class CheckResult:
         return self.status == Status.UP
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the complete check result for machine-readable output."""
         return {
             "service_name": self.service_name,
             "timestamp": self.timestamp.isoformat(),
@@ -236,6 +237,7 @@ class CheckResult:
             "latency_ms": round(self.latency_ms, 2),
             "status_code": self.status_code,
             "error": self.error,
+            "details": self.details,
         }
 
     def to_export_row(self) -> dict[str, Any]:
