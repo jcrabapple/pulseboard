@@ -5,9 +5,38 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .models import CheckResult, ServiceSummary, Status
+
+
+def percentile(values: Sequence[float], pct: float) -> float:
+    """Return the ``pct``-th percentile of ``values`` using linear interpolation.
+
+    Implements the same "linear" / "inclusive" method used by numpy's default
+    and Python's :func:`statistics.quantiles`. Concretely, the virtual index
+    is ``pct/100 * (n - 1)``; when it lands between two data points we
+    interpolate linearly.
+
+    Edge cases:
+    * Empty input returns ``0.0`` (semantically "no data", matching the
+      existing ``ServiceSummary`` defaults).
+    * ``pct`` is clamped to ``[0, 100]``.
+    * Input does not need to be pre-sorted; a copy is sorted internally so
+      the caller's sequence is never mutated.
+    """
+    if not values:
+        return 0.0
+    pct = max(0.0, min(100.0, float(pct)))
+    xs = sorted(float(v) for v in values)
+    n = len(xs)
+    if n == 1:
+        return xs[0]
+    pos = (pct / 100.0) * (n - 1)
+    lo = int(pos)
+    hi = min(lo + 1, n - 1)
+    frac = pos - lo
+    return xs[lo] + (xs[hi] - xs[lo]) * frac
 
 
 class Storage:
@@ -200,10 +229,10 @@ class Storage:
             (service_name,),
         ).fetchone()
 
-        p95_idx = int(len(latencies_sorted) * 0.95) if latencies_sorted else 0
-        p99_idx = int(len(latencies_sorted) * 0.99) if latencies_sorted else 0
-        p50_idx = int(len(latencies_sorted) * 0.50) if latencies_sorted else 0
-
+        # Use the shared linear-interpolating percentile helper so all
+        # percentiles agree on a single, well-defined method (and so the
+        # median of even-count samples is actually the midpoint, not the
+        # upper value — the previous int() truncation was off by one).
         return ServiceSummary(
             service_name=service_name,
             total_checks=total,
@@ -215,9 +244,9 @@ class Storage:
             max_latency_ms=round(max(latencies_sorted), 2),
             last_status=Status(last_row["status"]) if last_row else Status.UNKNOWN,
             last_check=datetime.fromisoformat(last_row["timestamp"]) if last_row else None,
-            p95_latency_ms=round(latencies_sorted[min(p95_idx, len(latencies_sorted) - 1)], 2),
-            p99_latency_ms=round(latencies_sorted[min(p99_idx, len(latencies_sorted) - 1)], 2),
-            p50_latency_ms=round(latencies_sorted[min(p50_idx, len(latencies_sorted) - 1)], 2),
+            p95_latency_ms=round(percentile(latencies, 95), 2) if latencies else 0.0,
+            p99_latency_ms=round(percentile(latencies, 99), 2) if latencies else 0.0,
+            p50_latency_ms=round(percentile(latencies, 50), 2) if latencies else 0.0,
         )
 
     def get_all_summaries(self, hours: int = 24) -> list[ServiceSummary]:
