@@ -597,6 +597,7 @@ pytest
 ## Changelog
 
 ### Unreleased
+- Fail-fast config validation for the `port` field on TCP/SSL services: out-of-range (>65535 or <1), non-integer, and boolean values are rejected at config-load time with a clear `ConfigError` instead of failing later as an opaque OS-level connect error during checks
 - Rate-limit backoff is now wired into the `watch` and `dashboard` loops — when a target returns HTTP 429, PulseBoard skips subsequent checks for that service until the Retry-After window expires, then resumes automatically. Skipped services get a synthetic DEGRADED result (no HTTP request is made), so storage, alerting, and dashboards continue to update without hammering the rate-limited target
 - New `RateLimitBackoff.filter_active()` partitions services into those to check vs those to skip, and `synthesize_backoff_result()` builds the synthetic CheckResult for skipped services
 - Webhook and notification payloads now include `status` — the raw service status value (`up`, `down`, `degraded`) — so external systems don't have to reverse-engineer it from the alert type string

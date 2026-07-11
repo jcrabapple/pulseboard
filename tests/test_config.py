@@ -270,6 +270,86 @@ def test_parse_services_accepts_valid_expected_status_204() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fail-fast validation: bad port values
+# ---------------------------------------------------------------------------
+
+
+def test_parse_services_rejects_port_above_65535() -> None:
+    """A port above 65535 is not a valid TCP port."""
+    config = {
+        "services": [
+            {"name": "Hi", "url": "https://api.example.com", "port": 99999}
+        ]
+    }
+    with pytest.raises(ConfigError, match="port must be"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_port_below_zero() -> None:
+    """A negative port is not a valid TCP port."""
+    config = {
+        "services": [
+            {"name": "Neg", "url": "https://api.example.com", "port": -1}
+        ]
+    }
+    with pytest.raises(ConfigError, match="port must be"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_port_zero() -> None:
+    """Port 0 is only OS-assigned at bind time, not a usable check target."""
+    config = {
+        "services": [
+            {"name": "Zero", "url": "https://api.example.com", "port": 0}
+        ]
+    }
+    with pytest.raises(ConfigError, match="port must be"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_non_numeric_string_port() -> None:
+    """A string port like 'https' should fail, not silently coerce."""
+    config = {
+        "services": [
+            {"name": "Str", "url": "https://api.example.com", "port": "https"}
+        ]
+    }
+    with pytest.raises(ConfigError, match="port must be"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_boolean_port() -> None:
+    """A boolean port (True/False) must be rejected, not coerced to 1/0."""
+    config = {
+        "services": [
+            {"name": "Bool", "url": "https://api.example.com", "port": True}
+        ]
+    }
+    with pytest.raises(ConfigError, match="port must be"):
+        parse_services(config)
+
+
+def test_parse_services_accepts_valid_port() -> None:
+    """A port in the valid range 1-65535 is accepted verbatim."""
+    config = {
+        "services": [
+            {"name": "Ok", "url": "https://api.example.com", "port": 8443}
+        ]
+    }
+    services = parse_services(config)
+    assert services[0].port == 8443
+
+
+def test_parse_services_accepts_nullable_port() -> None:
+    """An omitted/None port is valid (defaults are resolved at check time)."""
+    config = {
+        "services": [{"name": "None", "url": "https://api.example.com"}]
+    }
+    services = parse_services(config)
+    assert services[0].port is None
+
+
+# ---------------------------------------------------------------------------
 # re_alert_every_n_failures setting
 # ---------------------------------------------------------------------------
 

@@ -217,6 +217,24 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 f"Allowed: {', '.join(sorted(_ALLOWED_METHODS))}"
             )
 
+        # Port validation — TCP/SSL services use this field explicitly,
+        # and HTTP services may override the default port via the URL.
+        # Reject out-of-range, non-numeric, and boolean values so a bad
+        # port surfaces at config-load time (fail fast) instead of as an
+        # opaque OS-level connect error at check time.
+        raw_port = entry.get("port")
+        if raw_port is not None:
+            # Guards against bool (which is a subclass of int in Python)
+            # and non-numeric strings / floats.
+            if isinstance(raw_port, bool) or not isinstance(raw_port, int):
+                raise ConfigError(
+                    f"Service '{sname}': port must be an integer"
+                )
+            if not (1 <= raw_port <= 65535):
+                raise ConfigError(
+                    f"Service '{sname}': port must be between 1 and 65535"
+                )
+
         # groups must be a list of non-empty strings; reject other shapes.
         groups_raw = entry.get("groups", [])
         if not isinstance(groups_raw, list) or not all(
