@@ -636,6 +636,7 @@ pytest
 ## Changelog
 
 ### Unreleased
+- HTTP checks now surface redirect visibility in `details`: `redirect_count` (number of 3xx hops traversed via `follow_redirects=True`) and `final_url` (where the request ultimately landed). A silent redirect from `/old` to `/new` no longer hides that the configured URL is no longer the one being checked — dashboards, JSON output, and exports all see the hop count and final landing URL
 - New `pulseboard alerts` command: query the durable alert history log with rich table + JSON output, filters by service, hours, type, and limit
 - New `alerts` SQLite table auto-created on first use: every fired alert (down, recovery, degraded, re-alert) is persisted with timestamp, service name, alert type, status, message, latency, error, and consecutive failure count
 - New `Storage.record_alert()` and `Storage.get_alerts()` methods for reading/writing the alert log

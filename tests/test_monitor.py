@@ -9,16 +9,21 @@ from pulseboard.models import ServiceConfig, Status
 from pulseboard.monitor import check_http
 
 
-def _response(status_code: int = 200, retry_after: str | None = None) -> MagicMock:
+def _response(
+    status_code: int = 200,
+    retry_after: str | None = None,
+    final_url: str = "https://example.com/health",
+    history: list[httpx.Response] | None = None,
+) -> MagicMock:
     response = MagicMock()
     response.status_code = status_code
     response.content = b"ok"
     response.text = "ok"
-    response.url = httpx.URL("https://example.com/health")
-    headers = {"content-type": "text/plain"}
+    response.url = httpx.URL(final_url)
+    response.headers = {"content-type": "text/plain"}
+    response.history = history if history is not None else []
     if retry_after is not None:
-        headers["retry-after"] = retry_after
-    response.headers = headers
+        response.headers = {**response.headers, "retry-after": retry_after}
     return response
 
 
@@ -130,3 +135,66 @@ async def test_http_check_uses_POST_method_when_configured() -> None:
     client.request.assert_called_once_with(
         "POST", service.url, headers=service.headers
     )
+
+
+def _redirect_response(status_code: int, location: str) -> MagicMock:
+    """Build a mock 3xx response for a single redirect hop."""
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status_code
+    resp.headers = {"location": location}
+    resp.url = httpx.URL(location)
+    resp.content = b""
+    resp.text = ""
+    resp.history = []
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_http_check_records_redirect_count_in_details() -> None:
+    """A redirect chain should surface redirect_count in details for visibility."""
+    service = ServiceConfig(name="redirector", url="https://example.com/old")
+    final = _response(
+        status_code=200,
+        final_url="https://example.com/new",
+        history=[_redirect_response(301, "https://example.com/new")],
+    )
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=final)
+        result = await check_http(service)
+    assert result.status == Status.UP
+    assert result.details.get("redirect_count") == 1
+    assert result.details.get("final_url") == "https://example.com/new"
+
+
+@pytest.mark.asyncio
+async def test_http_check_no_redirects_has_zero_count() -> None:
+    """A direct 200 with no redirects should report redirect_count=0."""
+    service = ServiceConfig(name="direct", url="https://example.com/health")
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=_response())
+        result = await check_http(service)
+    assert result.status == Status.UP
+    assert result.details.get("redirect_count") == 0
+
+
+@pytest.mark.asyncio
+async def test_http_check_records_multi_hop_redirect_chain() -> None:
+    """A multi-hop redirect chain (A→B→C) should report redirect_count=2."""
+    service = ServiceConfig(name="multi-hop", url="https://a.example.com")
+    final_url = "https://c.example.com"
+    hop1 = _redirect_response(301, "https://b.example.com")
+    hop2 = _redirect_response(302, final_url)
+    final = _response(
+        status_code=200,
+        final_url=final_url,
+        history=[hop1, hop2],
+    )
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=final)
+        result = await check_http(service)
+    assert result.status == Status.UP
+    assert result.details.get("redirect_count") == 2
+    assert result.details.get("final_url") == final_url

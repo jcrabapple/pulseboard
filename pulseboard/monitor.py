@@ -59,6 +59,11 @@ async def check_http(service: ServiceConfig) -> CheckResult:
             details: dict[str, Any] = {
                 "content_length": len(resp.content),
                 "url": str(resp.url),
+                # Redirect visibility — surface how many 3xx hops led to
+                # the final response and where we landed. ``history`` is
+                # populated by httpx when ``follow_redirects=True``.
+                "redirect_count": len(getattr(resp, "history", [])),
+                "final_url": str(resp.url),
             }
 
             if is_rate_limited:
