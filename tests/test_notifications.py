@@ -24,6 +24,7 @@ from pulseboard.models import (
 from pulseboard.notifications import (
     ChannelSendResult,
     NotificationDispatcher,
+    _alert_description,
     render_discord_payload,
     render_slack_payload,
     render_telegram_payload,
@@ -225,6 +226,30 @@ class TestWebhookRenderer:
         alert = _make_alert(status=Status.UP, alert_type="recovery")
         payload = render_webhook_payload(alert)
         assert payload["status"] == "up"
+class TestAlertDescription:
+    def test_description_uses_alert_timestamp_not_render_time(self):
+        """The "Time:" line in rendered notifications must reflect the
+        moment the AlertManager fired the alert (``alert.timestamp``),
+        not the wall-clock time at render. Otherwise a delayed render
+        (queue, retries) drifts the displayed time away from the actual
+        event time that was also persisted to the alert log.
+        """
+        # Build an alert whose .timestamp is frozen in the past. The
+        # Alert constructor stamps .timestamp = datetime.now(utc) at
+        # construction, so we override it afterwards to a fixed value.
+        alert = _make_alert()
+        fixed = datetime(2025, 1, 1, 8, 30, 0, tzinfo=timezone.utc)
+        alert.timestamp = fixed
+
+        description = _alert_description(alert)
+        # The Time: line must include the alert's own timestamp, not the
+        # current wall-clock time.
+        assert "2025-01-01 08:30:00 UTC" in description
+        # And must NOT contain today's date (render time).
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert today not in description
+
+
 # ---------------------------------------------------------------------------
 # NotificationChannel dataclass & validation
 # ---------------------------------------------------------------------------

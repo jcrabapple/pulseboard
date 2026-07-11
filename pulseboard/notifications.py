@@ -112,8 +112,15 @@ def _alert_description(alert: Alert) -> str:
         lines.append(f"Reason: {alert.result.error}")
     if alert.result.status_code is not None:
         lines.append(f"Status code: {alert.result.status_code}")
+    # Use the alert's own firing timestamp, not the render-time wall
+    # clock, so notifications line up with what was persisted to the
+    # alert log (and don't drift if rendering is delayed by a queue
+    # or retry).
+    ts = alert.timestamp
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
     lines.append(
-        f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        f"Time: {ts.strftime('%Y-%m-%d %H:%M:%S UTC')}"
     )
     return "\n".join(lines)
 
