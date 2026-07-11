@@ -157,6 +157,12 @@ def watch(config: str | None, once: bool) -> None:
             )
             storage.store_many(results)
 
+            # Auto-prune old history so the DB doesn't grow unbounded.
+            # history_days=0 disables pruning entirely.
+            history_days = settings.get("history_days", 30)
+            if history_days and history_days > 0:
+                storage.auto_prune(history_days=history_days)
+
             # Evaluate alerts
             for r in results:
                 prev = alerter.previous_status(r.service_name)

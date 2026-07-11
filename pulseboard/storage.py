@@ -293,6 +293,23 @@ class Storage:
         self.conn.commit()
         return cursor.rowcount
 
+    def auto_prune(self, history_days: int = 30) -> int:
+        """Prune checks **and** incidents older than ``history_days``.
+
+        Called by the ``watch`` loop after each batch of results is stored
+        so the SQLite database doesn't grow unbounded during long-term
+        monitoring. When ``history_days`` is ``0``, pruning is disabled
+        (nothing is deleted).
+
+        Returns the number of **check** rows deleted (incidents are a
+        side-effect and not counted in the return value).
+        """
+        if history_days <= 0:
+            return 0
+        deleted = self.prune(days=history_days)
+        self.prune_incidents(days=history_days)
+        return deleted
+
     # ------------------------------------------------------------------
     # Incidents
     # ------------------------------------------------------------------
