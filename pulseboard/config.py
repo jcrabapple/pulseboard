@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -258,6 +259,22 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 f"Service '{sname}': depends_on must not include itself"
             )
 
+        # body_regex must be a compilable Python regex if set, otherwise
+        # the error only surfaces at check time inside
+        # :func:`pulseboard.content_check.validate_body`, where the
+        # ``re.error`` message is opaque. Validate at config-load time so
+        # the user gets a clear, fast error pointing at the service and
+        # the bad pattern (matches the fail-fast philosophy used for URLs,
+        # intervals, ports, and status codes).
+        body_regex_val = entry.get("body_regex")
+        if body_regex_val:
+            try:
+                re.compile(body_regex_val)
+            except re.error as e:
+                raise ConfigError(
+                    f"Service '{sname}': invalid body_regex {body_regex_val!r}: {e}"
+                )
+
         svc = ServiceConfig(
             name=entry["name"],
             url=entry.get("url", ""),
@@ -281,7 +298,7 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
             dns_match_mode=entry.get("dns_match_mode", "any").lower(),
             body_contains=entry.get("body_contains"),
             body_not_contains=entry.get("body_not_contains"),
-            body_regex=entry.get("body_regex"),
+            body_regex=body_regex_val,
             json_path=entry.get("json_path"),
             json_path_expected=(
                 str(entry["json_path_expected"])

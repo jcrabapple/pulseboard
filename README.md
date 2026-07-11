@@ -636,6 +636,7 @@ pytest
 ## Changelog
 
 ### Unreleased
+- Fail-fast config validation for the `body_regex` field: an unbalanced character class, unclosed group, or otherwise non-compilable Python regex is now rejected at config-load time with a clear `ConfigError` naming the service and the offending pattern, instead of failing later inside the HTTP content checker with an opaque `re.error`
 - Global settings numeric validation: `check_interval`, `dashboard_refresh`, `history_days`, `alert_cooldown_seconds`, and `re_alert_every_n_failures` are now validated at config-load time. A typo like `check_interval: "sixty"`, a negative value, or a boolean now fails fast with a clear `ConfigError` instead of propagating to the watch loop where it would crash `time.sleep` with an opaque `TypeError`. Settings where `0` is a documented sentinel (`history_days`, `alert_cooldown_seconds`, `re_alert_every_n_failures`) still accept zero; `check_interval` and `dashboard_refresh` reject it. Non-mapping `settings:` blocks are also rejected up front
 - `settings` that is not a mapping is now rejected with a clear error instead of crashing internally
 - HTTP checks now surface redirect visibility in `details`: `redirect_count` (number of 3xx hops traversed via `follow_redirects=True`) and `final_url` (where the request ultimately landed). A silent redirect from `/old` to `/new` no longer hides that the configured URL is no longer the one being checked — dashboards, JSON output, and exports all see the hop count and final landing URL
