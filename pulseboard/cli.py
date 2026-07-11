@@ -594,6 +594,10 @@ def validate(config: str | None, as_json: bool) -> None:
               help="Only export checks at or before this ISO timestamp (UTC).")
 @click.option("--limit", "limit", default=None, type=int,
               help="Maximum number of records to export (most recent first when set).")
+@click.option("--status", "status", default=None,
+              type=click.Choice(["up", "down", "degraded", "unknown"],
+                                case_sensitive=False),
+              help="Only export checks with this status.")
 def export(
     config: str | None,
     output: str | None,
@@ -603,6 +607,7 @@ def export(
     since_iso: str | None,
     until_iso: str | None,
     limit: int | None,
+    status: str | None,
 ) -> None:
     """Export stored check history to CSV or JSON.
 
@@ -636,6 +641,7 @@ def export(
         since=since,
         until=until,
         order=order,
+        status=status,
     )
     if limit is not None:
         results = results[:limit]

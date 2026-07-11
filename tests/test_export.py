@@ -342,6 +342,31 @@ class TestStorageHistory:
         assert len(rows) == 2  # only the hour-1 and hour-2 rows
         storage.close()
 
+    def test_filter_by_status(self, tmp_path):
+        """get_history(status=...) should only return rows of that status."""
+        storage = Storage(tmp_path / "h.db")
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        storage.store(_make_result("upsvc", status=Status.UP, ts=base))
+        storage.store(_make_result("downsvc", status=Status.DOWN,
+                                   latency=0, status_code=None,
+                                   error="boom", ts=base))
+        rows = storage.get_history(status="down")
+        assert len(rows) == 1
+        assert rows[0].service_name == "downsvc"
+        assert rows[0].status == Status.DOWN
+        storage.close()
+
+    def test_filter_by_status_none_returns_all(self, tmp_path):
+        """status=None (the default) should not constrain results."""
+        storage = Storage(tmp_path / "h.db")
+        self._populate(storage)
+        # _populate stores 5 rows (all UP)
+        rows = storage.get_history(status="down")
+        assert rows == []
+        all_rows = storage.get_history()
+        assert len(all_rows) == 5
+        storage.close()
+
     def test_get_all_service_names(self, tmp_path):
         storage = Storage(tmp_path / "h.db")
         self._populate(storage)
@@ -480,6 +505,29 @@ class TestExportCLI:
         # Only header line, no data rows
         lines = text.strip().splitlines()
         assert len(lines) == 1
+
+    def test_status_filter(self, config_with_db, tmp_path):
+        """--status down should only export matching rows."""
+        runner = CliRunner()
+        out = tmp_path / "f.csv"
+        result = runner.invoke(
+            cli,
+            [
+                "export",
+                "-c",
+                str(config_with_db),
+                "-o",
+                str(out),
+                "--status",
+                "down",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        text = out.read_text()
+        lines = text.strip().splitlines()
+        # header + 1 row (only the DOWN result)
+        assert len(lines) == 2
+        assert "down" in lines[1]
 
     def test_limit_applies_desc_order(self, config_with_db, tmp_path):
         runner = CliRunner()

@@ -80,6 +80,7 @@ pulseboard export
 pulseboard export -o history.csv
 pulseboard export -o history.json
 pulseboard export -s "GitHub" --hours 24
+pulseboard export --status down --hours 6   # only DOWN checks for incident analysis
 
 # 14. View the incident timeline (durable across restarts)
 pulseboard incidents                # last 24h of outages (default sort: newest first)

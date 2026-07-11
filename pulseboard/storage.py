@@ -175,6 +175,7 @@ class Storage:
         since: datetime | None = None,
         until: datetime | None = None,
         order: str = "asc",
+        status: str | None = None,
     ) -> list[CheckResult]:
         """Query historical check results with optional filters.
 
@@ -183,6 +184,8 @@ class Storage:
             since: If provided, only return rows at or after this time (UTC).
             until: If provided, only return rows at or before this time (UTC).
             order: "asc" (oldest first, default) or "desc" (newest first).
+            status: If provided, only return rows with this status value
+                (e.g. ``"down"``, ``"up"``, ``"degraded"``, ``"unknown"``).
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -195,6 +198,9 @@ class Storage:
         if until is not None:
             clauses.append("timestamp <= ?")
             params.append(until.isoformat())
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.lower())
 
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         direction = "DESC" if order.lower() == "desc" else "ASC"
