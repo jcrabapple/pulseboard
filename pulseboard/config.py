@@ -619,6 +619,13 @@ services:
   #     - name: oncall-discord
   #       type: discord
   #       webhook_url: https://discord.com/api/webhooks/1/abc
+  #     # Generic webhook with HMAC-SHA256 signing: when ``webhook_secret``
+  #     # is set, each POST carries an ``X-PulseBoard-Signature`` header
+  #     # containing the hex-encoded HMAC-SHA256 of the raw JSON body.
+  #     - name: signed-relay
+  #       type: webhook
+  #       webhook_url: https://relay.example.com/ingest
+  #       webhook_secret: shared-secret-string
   #     - name: oncall-telegram
   #       type: telegram
   #       telegram_token: "123456:abcdef"

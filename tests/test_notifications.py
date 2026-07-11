@@ -432,6 +432,58 @@ class TestDispatch:
         assert body["type"] == "down"
         assert "timestamp" in body
 
+    def test_dispatch_webhook_with_secret_adds_signature_header(self, mock_async):
+        """When a webhook channel has a ``webhook_secret``, outgoing POSTs
+        must carry an ``X-PulseBoard-Signature`` header containing the
+        hex-encoded HMAC-SHA256 of the raw JSON body using that secret.
+        Receivers use this to verify the request was not tampered with.
+        """
+        import hmac
+        import hashlib
+
+        secret = "s3cret-key"
+        ch = NotificationChannel(
+            name="signed", channel_type=ChannelType.WEBHOOK,
+            webhook_url="https://example.com/hook",
+            webhook_secret=secret,
+        )
+        d = NotificationDispatcher(channels=[ch])
+        results = d.dispatch_sync(_make_alert())
+        assert results[0].success is True
+        req = mock_async.requests[0]
+        sig = req.headers.get("X-PulseBoard-Signature")
+        assert sig is not None, "signature header must be present when webhook_secret set"
+        expected = hmac.new(
+            secret.encode("utf-8"), req.content, hashlib.sha256
+        ).hexdigest()
+        assert sig == expected
+
+    def test_dispatch_webhook_without_secret_has_no_signature_header(self, mock_async):
+        """A webhook channel with no ``webhook_secret`` must NOT add a
+        signature header — absence is itself information for the receiver.
+        """
+        d = NotificationDispatcher(channels=[_webhook_channel()])
+        results = d.dispatch_sync(_make_alert())
+        assert results[0].success is True
+        req = mock_async.requests[0]
+        assert req.headers.get("X-PulseBoard-Signature") is None
+
+    def test_from_config_propagates_webhook_secret(self):
+        """A ``webhook_secret`` in the YAML ``notification_channels`` block
+        must be carried onto the constructed NotificationChannel so that
+        dispatched alerts are signed.
+        """
+        d = NotificationDispatcher.from_config(
+            [{
+                "name": "signed",
+                "type": "webhook",
+                "webhook_url": "https://example.com/hook",
+                "webhook_secret": "topsecret",
+            }]
+        )
+        assert len(d.channels) == 1
+        assert d.channels[0].webhook_secret == "topsecret"
+
     def test_dispatch_fans_out_to_multiple_channels(self, mock_async):
         d = NotificationDispatcher(
             channels=[_slack_channel(), _discord_channel(), _webhook_channel()]

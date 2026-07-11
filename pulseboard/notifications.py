@@ -16,6 +16,9 @@ Failures in one channel never prevent the others from firing.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json as _json
 import smtplib
 import ssl
 from datetime import datetime, timezone
@@ -296,12 +299,17 @@ def render_email_payload(alert: Alert, channel: NotificationChannel) -> EmailMes
 
 
 async def _post_json(
-    channel: NotificationChannel, url: str, payload: dict[str, Any]
+    channel: NotificationChannel, url: str, payload: dict[str, Any],
+    *, extra_headers: dict[str, str] | None = None,
 ) -> ChannelSendResult:
-    """POST a JSON payload to ``url`` and convert the response into a result."""
+    """POST a JSON payload to ``url`` and convert the response into a result.
+
+    ``extra_headers`` lets channel-specific callers attach things like an
+    HMAC signature header without changing the shape of every sender.
+    """
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, json=payload, headers=extra_headers)
         ok = 200 <= resp.status_code < 300
         return ChannelSendResult(
             channel=channel,
@@ -374,11 +382,64 @@ async def _send_telegram(
         )
 
 
+# Header name for HMAC-SHA256 webhook signing. Receivers read this
+# header and verify it matches ``HMAC-SHA256(webhook_secret, raw_body)``.
+SIGNATURE_HEADER = "X-PulseBoard-Signature"
+
+
+def _signature_headers(payload: dict[str, Any], secret: str) -> dict[str, str]:
+    """Return the headers to attach when signing an outgoing webhook body.
+
+    The signature is the hex-encoded HMAC-SHA256 of the exact JSON bytes
+    httpx will serialize for the POST (compact separators, UTF-8). We
+    pre-serialize ourselves so we can sign the same bytes the receiver
+    sees on the wire — passing ``json=payload`` to httpx would otherwise
+    re-serialize and let formatting differences break verification.
+    """
+    body = _json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    # We stash the body bytes on the dict so the caller can pass them via
+    # ``content=`` rather than ``json=``, keeping the on-wire bytes
+    # identical to what was signed. Hack-ish but local and explicit.
+    # Using a non-dunder attribute keeps this out of the way of callers.
+    # (Consumers use :func:`_send_webhook` below, which is the only one
+    # that reads this back.)
+    return {"_signed_body": body.decode("utf-8"), SIGNATURE_HEADER: digest}
+
+
 async def _send_webhook(
     channel: NotificationChannel, alert: Alert
 ) -> ChannelSendResult:
     assert channel.webhook_url is not None
-    return await _post_json(channel, channel.webhook_url, render_webhook_payload(alert))
+    payload = render_webhook_payload(alert)
+    headers: dict[str, str] | None = None
+    body: str | None = None
+    if channel.webhook_secret:
+        signed = _signature_headers(payload, channel.webhook_secret)
+        body = signed.pop("_signed_body")
+        headers = signed
+    if body is not None:
+        # Send the pre-serialized body verbatim so the signature matches.
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
+                resp = await client.post(
+                    channel.webhook_url, content=body, headers=headers
+                )
+            ok = 200 <= resp.status_code < 300
+            return ChannelSendResult(
+                channel=channel,
+                success=ok,
+                status_code=resp.status_code,
+                error=None if ok else resp.text[:200],
+            )
+        except Exception as e:
+            return ChannelSendResult(
+                channel=channel,
+                success=False,
+                status_code=None,
+                error=f"{type(e).__name__}: {e}",
+            )
+    return await _post_json(channel, channel.webhook_url, payload)
 
 
 # Default SMTP submission port when the user leaves smtp_port unset. The
@@ -535,6 +596,7 @@ class NotificationDispatcher:
                     smtp_subject_prefix=entry.get(
                         "smtp_subject_prefix", "[PulseBoard]"
                     ),
+                    webhook_secret=entry.get("webhook_secret"),
                     options=entry.get("options", {}) or {},
                 )
             except KeyError as e:

@@ -83,6 +83,12 @@ class NotificationChannel:
     smtp_from_addr: str | None = None  # RFC 5322 From: address
     smtp_to_addrs: list[str] = field(default_factory=list)  # one or more recipients
     smtp_subject_prefix: str = "[PulseBoard]"  # shown in the subject line
+    # Optional shared secret for HMAC-SHA256 signing of outgoing webhook
+    # POST bodies. When set (webhook-type channels only), each request
+    # carries an ``X-PulseBoard-Signature`` header with the hex-encoded
+    # HMAC-SHA256 of the raw JSON body keyed by this secret. Receivers
+    # verify the header to confirm the request came from PulseBoard.
+    webhook_secret: str | None = None
     # Free-form options bag for future expansion (e.g. message_thread_id).
     options: dict[str, Any] = field(default_factory=dict)
 
