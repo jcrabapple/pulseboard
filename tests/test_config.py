@@ -229,3 +229,41 @@ def test_parse_services_accepts_HEAD_method() -> None:
     }
     services = parse_services(config)
     assert services[0].method == "HEAD"
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast validation: bad expected_status values
+# ---------------------------------------------------------------------------
+
+
+def test_parse_services_rejects_expected_status_below_100() -> None:
+    """A status code below 100 is not a valid HTTP status code."""
+    config = {
+        "services": [
+            {"name": "Bad", "url": "https://api.example.com", "expected_status": 99}
+        ]
+    }
+    with pytest.raises(ConfigError, match="expected_status"):
+        parse_services(config)
+
+
+def test_parse_services_rejects_expected_status_above_599() -> None:
+    """A status code above 599 is not a valid HTTP status code."""
+    config = {
+        "services": [
+            {"name": "Bad", "url": "https://api.example.com", "expected_status": 600}
+        ]
+    }
+    with pytest.raises(ConfigError, match="expected_status"):
+        parse_services(config)
+
+
+def test_parse_services_accepts_valid_expected_status_204() -> None:
+    """204 No Content should be accepted as a valid expected_status."""
+    config = {
+        "services": [
+            {"name": "NoContent", "url": "https://api.example.com", "expected_status": 204}
+        ]
+    }
+    services = parse_services(config)
+    assert services[0].expected_status == 204

@@ -185,6 +185,27 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 f"Service '{sname}': alert_channels must be a list of strings"
             )
 
+        # --- expected_status validation ---
+        # HTTP status codes range from 100-599. A value outside this range
+        # either never matches (everything reports DEGRADED) or matches
+        # nothing a real server returns, so fail fast at load time.
+        expected_status_val = entry.get("expected_status", 200)
+        if isinstance(expected_status_val, bool):
+            raise ConfigError(
+                f"Service '{sname}': expected_status must be an integer, "
+                f"got boolean"
+            )
+        if not isinstance(expected_status_val, int):
+            raise ConfigError(
+                f"Service '{sname}': expected_status must be an integer, "
+                f"got {type(expected_status_val).__name__}"
+            )
+        if not (100 <= expected_status_val <= 599):
+            raise ConfigError(
+                f"Service '{sname}': expected_status must be between 100 "
+                f"and 599, got {expected_status_val}"
+            )
+
         # HTTP method validation — only standard verbs. Restricting the
         # set prevents a typo (e.g. "GE") from failing silently at check
         # time with an httpx-level error.
