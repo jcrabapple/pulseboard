@@ -384,7 +384,21 @@ def _validate_dependency_graph(services: list[ServiceConfig]) -> None:
 
 
 def get_settings(raw: dict[str, Any]) -> dict[str, Any]:
-    """Extract global settings with defaults."""
+    """Extract global settings with defaults.
+
+    Numeric global settings (``check_interval``, ``dashboard_refresh``,
+    ``history_days``, ``alert_cooldown_seconds``,
+    ``re_alert_every_n_failures``) are validated at load time so a typo
+    like ``check_interval: "sixty"`` fails fast with a clear
+    :class:`ConfigError` instead of propagating to the watch loop where
+    it would crash ``time.sleep`` with an opaque ``TypeError``.
+
+    The validators allow ``0`` for settings where zero is a documented
+    sentinel (``history_days=0`` disables pruning,
+    ``alert_cooldown_seconds=0`` disables dedup,
+    ``re_alert_every_n_failures=0`` disables re-alerting) but reject
+    negative values, booleans, and non-numeric types throughout.
+    """
     defaults = {
         "db_path": str(Path.home() / ".local" / "share" / "pulseboard" / "pulseboard.db"),
         "check_interval": 60,
@@ -398,8 +412,52 @@ def get_settings(raw: dict[str, Any]) -> dict[str, Any]:
         "history_days": 30,
         "notification_channels": [],
     }
-    defaults.update(raw.get("settings", {}))
+    user_settings = raw.get("settings", {})
+    if not isinstance(user_settings, dict):
+        raise ConfigError(
+            "Config 'settings' must be a mapping (key: value), "
+            f"got {type(user_settings).__name__}"
+        )
+    defaults.update(user_settings)
+    _validate_numeric_settings(defaults)
     return defaults
+
+
+def _validate_numeric_settings(settings: dict[str, Any]) -> None:
+    """Fail fast on invalid numeric global settings.
+
+    Each field listed in ``_NUMERIC_SETTING_SPECS`` is checked: the value
+    must be a real number (not a bool, not a string), and must satisfy the
+    minimum bound.  The minimum is ``0`` for the fields where zero is a
+    meaningful sentinel (``history_days``, ``alert_cooldown_seconds``,
+    ``re_alert_every_n_failures``) and ``1`` for the fields where zero
+    would be nonsensical (``check_interval``, ``dashboard_refresh``).
+    """
+    # (field name, minimum, unit label)
+    _NUMERIC_SETTING_SPECS = (
+        ("check_interval", 1, "seconds"),
+        ("dashboard_refresh", 1, "seconds"),
+        ("history_days", 0, "days"),
+        ("alert_cooldown_seconds", 0, "seconds"),
+        ("re_alert_every_n_failures", 0, "failures"),
+    )
+    for field, minimum, unit in _NUMERIC_SETTING_SPECS:
+        value = settings.get(field)
+        # bool is a subclass of int in Python; reject it explicitly so
+        # ``True``/``False`` doesn't slip through as 1/0.
+        if isinstance(value, bool):
+            raise ConfigError(
+                f"settings.{field} must be a number, got boolean"
+            )
+        if not isinstance(value, (int, float)):
+            raise ConfigError(
+                f"settings.{field} must be a number ({unit}), "
+                f"got {type(value).__name__}"
+            )
+        if value < minimum:
+            raise ConfigError(
+                f"settings.{field} must be >= {minimum} ({unit}), got {value}"
+            )
 
 
 EXAMPLE_CONFIG = """\

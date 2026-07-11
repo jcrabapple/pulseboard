@@ -369,3 +369,186 @@ def test_get_settings_reads_re_alert_from_config() -> None:
 
     settings = get_settings({"settings": {"re_alert_every_n_failures": 5}})
     assert settings["re_alert_every_n_failures"] == 5
+
+
+# ------------------------------------------------------------------ #
+# Global settings validation
+#
+# ``get_settings`` must fail fast on non-numeric, negative, or boolean
+# values for the numeric global settings — otherwise a typo like
+# ``check_interval: "sixty"`` propagates to the watch loop and crashes
+# with an opaque ``TypeError`` from ``time.sleep``.
+# ------------------------------------------------------------------ #
+
+
+class TestCheckIntervalValidation:
+    def test_rejects_string_check_interval(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="check_interval"):
+            get_settings({"settings": {"check_interval": "sixty"}})
+
+    def test_rejects_negative_check_interval(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="check_interval"):
+            get_settings({"settings": {"check_interval": -1}})
+
+    def test_rejects_zero_check_interval(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="check_interval"):
+            get_settings({"settings": {"check_interval": 0}})
+
+    def test_rejects_boolean_check_interval(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="check_interval"):
+            get_settings({"settings": {"check_interval": True}})
+
+    def test_accepts_valid_check_interval(self) -> None:
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"check_interval": 120}})
+        assert settings["check_interval"] == 120
+
+
+class TestDashboardRefreshValidation:
+    def test_rejects_string_dashboard_refresh(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="dashboard_refresh"):
+            get_settings({"settings": {"dashboard_refresh": "fast"}})
+
+    def test_rejects_negative_dashboard_refresh(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="dashboard_refresh"):
+            get_settings({"settings": {"dashboard_refresh": -1}})
+
+    def test_rejects_zero_dashboard_refresh(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="dashboard_refresh"):
+            get_settings({"settings": {"dashboard_refresh": 0}})
+
+    def test_rejects_boolean_dashboard_refresh(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="dashboard_refresh"):
+            get_settings({"settings": {"dashboard_refresh": False}})
+
+    def test_accepts_valid_dashboard_refresh(self) -> None:
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"dashboard_refresh": 10}})
+        assert settings["dashboard_refresh"] == 10
+
+
+class TestHistoryDaysValidation:
+    def test_rejects_string_history_days(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="history_days"):
+            get_settings({"settings": {"history_days": "thirty"}})
+
+    def test_rejects_negative_history_days(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="history_days"):
+            get_settings({"settings": {"history_days": -1}})
+
+    def test_rejects_boolean_history_days(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="history_days"):
+            get_settings({"settings": {"history_days": True}})
+
+    def test_accepts_zero_history_days_disables_pruning(self) -> None:
+        """``history_days: 0`` is a documented sentinel that disables
+        pruning — it must be accepted, not rejected."""
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"history_days": 0}})
+        assert settings["history_days"] == 0
+
+    def test_accepts_valid_history_days(self) -> None:
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"history_days": 90}})
+        assert settings["history_days"] == 90
+
+
+class TestAlertCooldownValidation:
+    def test_rejects_string_alert_cooldown(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="alert_cooldown_seconds"):
+            get_settings({"settings": {"alert_cooldown_seconds": "soon"}})
+
+    def test_rejects_negative_alert_cooldown(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="alert_cooldown_seconds"):
+            get_settings({"settings": {"alert_cooldown_seconds": -1}})
+
+    def test_rejects_boolean_alert_cooldown(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="alert_cooldown_seconds"):
+            get_settings({"settings": {"alert_cooldown_seconds": True}})
+
+    def test_accepts_zero_alert_cooldown(self) -> None:
+        """``0`` is the documented default that disables dedup — must pass."""
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"alert_cooldown_seconds": 0}})
+        assert settings["alert_cooldown_seconds"] == 0
+
+    def test_accepts_valid_alert_cooldown(self) -> None:
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"alert_cooldown_seconds": 300}})
+        assert settings["alert_cooldown_seconds"] == 300
+
+
+class TestReAlertEveryNFailuresValidation:
+    def test_rejects_string_re_alert(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="re_alert_every_n_failures"):
+            get_settings({"settings": {"re_alert_every_n_failures": "five"}})
+
+    def test_rejects_negative_re_alert(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="re_alert_every_n_failures"):
+            get_settings({"settings": {"re_alert_every_n_failures": -1}})
+
+    def test_rejects_boolean_re_alert(self) -> None:
+        from pulseboard.config import get_settings
+
+        with pytest.raises(ConfigError, match="re_alert_every_n_failures"):
+            get_settings({"settings": {"re_alert_every_n_failures": True}})
+
+    def test_accepts_zero_re_alert(self) -> None:
+        """``0`` is the documented default that disables re-alerting — must pass."""
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"re_alert_every_n_failures": 0}})
+        assert settings["re_alert_every_n_failures"] == 0
+
+    def test_accepts_valid_re_alert(self) -> None:
+        from pulseboard.config import get_settings
+
+        settings = get_settings({"settings": {"re_alert_every_n_failures": 5}})
+        assert settings["re_alert_every_n_failures"] == 5
+
+
+def test_get_settings_ignores_unknown_keys() -> None:
+    """Unknown settings keys must not trigger validation errors —
+    forward-compatibility for future additions."""
+    from pulseboard.config import get_settings
+
+    settings = get_settings({"settings": {"unknown_key": "anything"}})
+    assert "unknown_key" in settings  # surfaced verbatim, just not validated
