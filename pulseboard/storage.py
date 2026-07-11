@@ -104,8 +104,8 @@ class Storage:
     def store(self, result: CheckResult) -> None:
         """Store a check result."""
         self.conn.execute(
-            """INSERT INTO checks (service_name, timestamp, status, latency_ms, status_code, error)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO checks (service_name, timestamp, status, latency_ms, status_code, error, details)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 result.service_name,
                 result.timestamp.isoformat(),
@@ -113,6 +113,7 @@ class Storage:
                 result.latency_ms,
                 result.status_code,
                 result.error,
+                _serialize_details(result.details),
             ),
         )
         self.conn.commit()
@@ -120,8 +121,8 @@ class Storage:
     def store_many(self, results: list[CheckResult]) -> None:
         """Batch store check results."""
         self.conn.executemany(
-            """INSERT INTO checks (service_name, timestamp, status, latency_ms, status_code, error)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO checks (service_name, timestamp, status, latency_ms, status_code, error, details)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     r.service_name,
@@ -130,6 +131,7 @@ class Storage:
                     r.latency_ms,
                     r.status_code,
                     r.error,
+                    _serialize_details(r.details),
                 )
                 for r in results
             ],
@@ -543,4 +545,42 @@ class Storage:
             latency_ms=row["latency_ms"],
             status_code=row["status_code"],
             error=row["error"],
+            details=_parse_details(row["details"]),
         )
+
+
+def _serialize_details(details: dict[str, Any] | None) -> str:
+    """Serialize a details dict for SQLite storage.
+
+    JSON-encodes the dict; ``None`` and empty dicts are stored as ``'{}'``
+    so the column never holds NULL. Non-serializable values are repr'd via
+    the ``default=str`` fallback so we never crash a check write.
+    """
+    import json
+
+    if not details:
+        return "{}"
+    try:
+        return json.dumps(details, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def _parse_details(raw: Any) -> dict[str, Any]:
+    """Parse a stored details column back into a dict.
+
+    Tolerates ``None``, empty strings, legacy rows that predate the column,
+    and malformed JSON by returning ``{}`` — so a corrupt row never breaks
+    ``get_recent`` or ``get_history`` for the whole service.
+    """
+    import json
+
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}

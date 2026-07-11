@@ -121,6 +121,63 @@ def test_storage_summary_includes_p50_latency(tmp_path):
     storage.close()
 
 
+def test_storage_preserves_details(tmp_path):
+    """A CheckResult with populated `details` must survive a storage round-trip.
+
+    The `checks` table has a `details TEXT DEFAULT '{}'` column, but for a
+    long time the insert/retrieve helpers ignored it, so DNS answers, SSL
+    metadata, content-check outcomes, rate-limit hints, threshold results,
+    and dependency-impact annotations were silently lost. This test pins
+    the contract: whatever is stored in `details` comes back unchanged.
+    """
+    db = tmp_path / "test.db"
+    storage = Storage(db)
+
+    original = CheckResult(
+        service_name="example",
+        timestamp=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        status=Status.UP,
+        latency_ms=42.5,
+        status_code=200,
+        details={
+            "content_checks": [{"check": "body_contains", "passed": True}],
+            "retry_after_seconds": 120,
+            "thresholds": {"violated": ["latency_critical"]},
+            "dependency_impact": [{"depends_on": "api", "status": "down"}],
+        },
+    )
+    storage.store(original)
+
+    retrieved = storage.get_recent("example", limit=1)
+    assert len(retrieved) == 1
+    assert retrieved[0].details == original.details
+
+    storage.close()
+
+
+def test_storage_store_many_preserves_details(tmp_path):
+    """`store_many` (the batch insert used by `watch`) must also persist details."""
+    db = tmp_path / "test.db"
+    storage = Storage(db)
+
+    original = CheckResult(
+        service_name="batched",
+        timestamp=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        status=Status.DEGRADED,
+        latency_ms=12.5,
+        status_code=429,
+        error="HTTP 429 Too Many Requests",
+        details={"rate_limited": True, "retry_after_seconds": 60},
+    )
+    storage.store_many([original])
+
+    retrieved = storage.get_recent("batched", limit=1)
+    assert len(retrieved) == 1
+    assert retrieved[0].details == original.details
+
+    storage.close()
+
+
 def test_storage_prune(tmp_path):
     db = tmp_path / "test.db"
     storage = Storage(db)
