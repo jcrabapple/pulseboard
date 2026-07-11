@@ -571,6 +571,8 @@ pytest
 ## Changelog
 
 ### Unreleased
+- Rate-limit backoff is now wired into the `watch` and `dashboard` loops — when a target returns HTTP 429, PulseBoard skips subsequent checks for that service until the Retry-After window expires, then resumes automatically. Skipped services get a synthetic DEGRADED result (no HTTP request is made), so storage, alerting, and dashboards continue to update without hammering the rate-limited target
+- New `RateLimitBackoff.filter_active()` partitions services into those to check vs those to skip, and `synthesize_backoff_result()` builds the synthetic CheckResult for skipped services
 - Webhook and notification payloads now include `status` — the raw service status value (`up`, `down`, `degraded`) — so external systems don't have to reverse-engineer it from the alert type string
 - Webhook and notification payloads now include `consecutive_failures` — the count of consecutive non-UP checks for the service — so external systems can escalate after N failures
 - HTTP content validation now treats an empty or undecodable response body as validation input, so required substrings, regexes, and JSON paths fail instead of being silently skipped

@@ -37,6 +37,7 @@ from .dashboard import (
     print_status_line,
     render_dashboard,
 )
+from .backoff import RateLimitBackoff, synthesize_backoff_result
 from .monitor import run_all_checks, run_all_checks_with_thresholds, run_check
 from .models import ServiceType, Status
 from .storage import Storage
@@ -140,6 +141,7 @@ def watch(config: str | None, once: bool) -> None:
     notifier = NotificationDispatcher.from_config(
         settings.get("notification_channels", [])
     )
+    backoff = RateLimitBackoff()
 
     console.print(f"[bold cyan]⚡ PulseBoard[/bold cyan] monitoring {len(services)} services (Ctrl+C to stop)\n")
 
@@ -152,9 +154,26 @@ def watch(config: str | None, once: bool) -> None:
             ) -> list[CheckResult]:
                 return storage.get_recent(name, limit=200)
 
-            results = asyncio.run(
-                run_all_checks_with_thresholds(services, history_provider)
+            # Partition services: those in an active 429 backoff window
+            # are skipped (no HTTP request) and given a synthetic result.
+            to_check, to_skip = backoff.filter_active(services)
+            checked_results = asyncio.run(
+                run_all_checks_with_thresholds(to_check, history_provider)
             )
+            skipped_results = [
+                synthesize_backoff_result(name, remaining)
+                for name, remaining in to_skip
+            ]
+            results = checked_results + skipped_results
+            # Keep results in service order so output is stable.
+            svc_order = {s.name: i for i, s in enumerate(services)}
+            results.sort(key=lambda r: svc_order.get(r.service_name, 9999))
+
+            # Feed results back into the backoff tracker so it updates
+            # its per-service windows from any new 429 responses.
+            for r in checked_results:
+                backoff.observe(r)
+
             storage.store_many(results)
 
             # Auto-prune old history so the DB doesn't grow unbounded.
@@ -239,6 +258,7 @@ def dashboard(config: str | None) -> None:
     notifier = NotificationDispatcher.from_config(
         settings.get("notification_channels", [])
     )
+    backoff = RateLimitBackoff()
     refresh = settings.get("dashboard_refresh", 5)
 
     console.print("[bold cyan]⚡ PulseBoard Dashboard[/bold cyan] (Ctrl+C to exit)\n")
@@ -250,9 +270,23 @@ def dashboard(config: str | None) -> None:
                 def history_provider(name: str) -> list[CheckResult]:
                     return storage.get_recent(name, limit=200)
 
-                results = asyncio.run(
-                    run_all_checks_with_thresholds(services, history_provider)
+                # Partition services: those in an active 429 backoff window
+                # are skipped and given a synthetic result.
+                to_check, to_skip = backoff.filter_active(services)
+                checked_results = asyncio.run(
+                    run_all_checks_with_thresholds(to_check, history_provider)
                 )
+                skipped_results = [
+                    synthesize_backoff_result(name, remaining)
+                    for name, remaining in to_skip
+                ]
+                results = checked_results + skipped_results
+                svc_order = {s.name: i for i, s in enumerate(services)}
+                results.sort(key=lambda r: svc_order.get(r.service_name, 9999))
+
+                for r in checked_results:
+                    backoff.observe(r)
+
                 storage.store_many(results)
 
                 for r in results:

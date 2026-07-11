@@ -27,9 +27,12 @@ Design
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from .models import CheckResult
+from .models import CheckResult, Status
+
+if TYPE_CHECKING:
+    from .models import ServiceConfig
 
 
 class RateLimitBackoff:
@@ -126,6 +129,37 @@ class RateLimitBackoff:
                 out[name] = remaining
         return out
 
+    # ------------------------------------------------------------------ #
+    # Watch-loop integration
+    # ------------------------------------------------------------------ #
+
+    def filter_active(
+        self, services: list["ServiceConfig"]
+    ) -> tuple[list["ServiceConfig"], list[tuple[str, float]]]:
+        """Partition services into those to check vs those to skip.
+
+        Returns ``(to_check, to_skip)``:
+        - ``to_check``: services whose backoff has expired or never started.
+        - ``to_skip``: ``(service_name, backoff_seconds_remaining)`` pairs for
+          services that are still in an active backoff window.
+
+        Callers should:
+
+        1. Run checks only on ``to_check``.
+        2. Feed the results into :meth:`observe`.
+        3. For each entry in ``to_skip``, build a synthetic result via
+           :func:`synthesize_backoff_result` instead of a real HTTP request.
+        """
+        to_check: list[ServiceConfig] = []
+        to_skip: list[tuple[str, float]] = []
+        for svc in services:
+            remaining = self.should_skip(svc.name)
+            if remaining is not None:
+                to_skip.append((svc.name, remaining))
+            else:
+                to_check.append(svc)
+        return to_check, to_skip
+
     def _prune(self) -> None:
         """Remove expired backoff entries (remaining < 0)."""
         now = self._now()
@@ -136,3 +170,31 @@ class RateLimitBackoff:
         ]
         for name in expired:
             self._backoff_until.pop(name, None)
+
+
+def synthesize_backoff_result(
+    service_name: str, backoff_remaining: float
+) -> CheckResult:
+    """Build a DEGRADED CheckResult for a rate-limited service that was skipped.
+
+    This avoids a real HTTP request while ensuring storage, alerting, and
+    dashboard display still see a result. The ``details`` dict carries the
+    backoff state so consumers can inspect it:
+
+    - ``rate_limited`` → ``True`` (the check was skipped because of a prior 429)
+    - ``backoff_seconds_remaining`` → time left in the cooldown window
+
+    Latency is reported as ``0.0`` (no network round-trip); ``status_code``
+    is ``None`` (no HTTP response was received).
+    """
+    return CheckResult(
+        service_name=service_name,
+        timestamp=datetime.now(timezone.utc),
+        status=Status.DEGRADED,
+        latency_ms=0.0,
+        error=f"HTTP 429 rate-limit backoff: {backoff_remaining:.0f}s remaining",
+        details={
+            "rate_limited": True,
+            "backoff_seconds_remaining": backoff_remaining,
+        },
+    )
