@@ -28,7 +28,7 @@ async def test_http_check_verifies_tls_certificates_by_default() -> None:
 
     with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
         client = client_class.return_value.__aenter__.return_value
-        client.get = AsyncMock(return_value=_response())
+        client.request = AsyncMock(return_value=_response())
 
         result = await check_http(service)
 
@@ -47,7 +47,7 @@ async def test_http_check_marks_429_as_degraded_and_reports_retry_after() -> Non
 
     with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
         client = client_class.return_value.__aenter__.return_value
-        client.get = AsyncMock(
+        client.request = AsyncMock(
             return_value=_response(status_code=429, retry_after="30")
         )
 
@@ -67,7 +67,7 @@ async def test_http_check_429_without_retry_after_header_is_flagged_as_rate_limi
 
     with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
         client = client_class.return_value.__aenter__.return_value
-        client.get = AsyncMock(return_value=_response(status_code=429))
+        client.request = AsyncMock(return_value=_response(status_code=429))
 
         result = await check_http(service)
 
@@ -75,3 +75,58 @@ async def test_http_check_429_without_retry_after_header_is_flagged_as_rate_limi
     assert result.details.get("rate_limited") is True
     # No Retry-After header means we don't know when to retry; absent, not 0.
     assert "retry_after_seconds" not in result.details
+
+
+@pytest.mark.asyncio
+async def test_http_check_defaults_to_get_method() -> None:
+    """When no method is configured, the HTTP check uses GET by default."""
+    service = ServiceConfig(name="default", url="https://example.com/health")
+
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=_response())
+
+        result = await check_http(service)
+
+    assert result.status == Status.UP
+    client.request.assert_called_once_with(
+        "GET", service.url, headers=service.headers
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_check_uses_HEAD_method_when_configured() -> None:
+    """A service with method='HEAD' should issue a HEAD request, not GET."""
+    service = ServiceConfig(
+        name="head-check", url="https://example.com/health", method="HEAD"
+    )
+
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=_response())
+
+        result = await check_http(service)
+
+    assert result.status == Status.UP
+    client.request.assert_called_once_with(
+        "HEAD", service.url, headers=service.headers
+    )
+
+
+@pytest.mark.asyncio
+async def test_http_check_uses_POST_method_when_configured() -> None:
+    """A service with method='POST' should issue a POST request, not GET."""
+    service = ServiceConfig(
+        name="post-check", url="https://example.com/health", method="POST"
+    )
+
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=_response())
+
+        result = await check_http(service)
+
+    assert result.status == Status.UP
+    client.request.assert_called_once_with(
+        "POST", service.url, headers=service.headers
+    )

@@ -208,3 +208,24 @@ def test_parse_services_rejects_boolean_timeout() -> None:
     }
     with pytest.raises(ConfigError, match="timeout must be a number"):
         parse_services(config)
+
+
+def test_parse_services_rejects_unsupported_http_method() -> None:
+    """Only standard HTTP verbs may be configured for a service's `method`."""
+    config = {
+        "services": [
+            {"name": "Bad", "url": "https://api.example.com", "method": "TRACE"}
+        ]
+    }
+    with pytest.raises(ConfigError, match="unsupported HTTP method"):
+        parse_services(config)
+
+
+def test_parse_services_accepts_HEAD_method() -> None:
+    config = {
+        "services": [
+            {"name": "Head", "url": "https://api.example.com", "method": "HEAD"}
+        ]
+    }
+    services = parse_services(config)
+    assert services[0].method == "HEAD"

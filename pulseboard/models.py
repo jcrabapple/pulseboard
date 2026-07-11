@@ -194,6 +194,10 @@ class ServiceConfig:
     error_rate_window: int = 50  # rolling window of recent checks for error-rate calculation
     error_rate_warning_pct: float | None = None  # 0-100; failures above this -> DEGRADED
     error_rate_critical_pct: float | None = None  # 0-100; failures above this -> DOWN
+    # HTTP request method for HTTP-type checks. Defaults to "GET"; common
+    # alternatives are "HEAD" (lightweight liveness checks that skip the
+    # body) and "POST" (health endpoints that expect a probe payload).
+    method: str = "GET"
 
     def has_latency_thresholds(self) -> bool:
         return self.latency_warning_ms is not None or self.latency_critical_ms is not None

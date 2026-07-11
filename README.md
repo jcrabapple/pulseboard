@@ -130,6 +130,12 @@ services:
     timeout: 5
     tags: [local, smart-home]
 
+  # Use HEAD for lightweight liveness checks (no response body downloaded)
+  - name: CDN Health
+    url: https://cdn.example.com/health
+    method: HEAD
+    interval: 30
+
   - name: Router
     type: tcp
     host: 192.168.1.1

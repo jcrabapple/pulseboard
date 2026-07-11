@@ -185,6 +185,17 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 f"Service '{sname}': alert_channels must be a list of strings"
             )
 
+        # HTTP method validation — only standard verbs. Restricting the
+        # set prevents a typo (e.g. "GE") from failing silently at check
+        # time with an httpx-level error.
+        method_val = str(entry.get("method", "GET")).upper()
+        _ALLOWED_METHODS = {"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"}
+        if method_val not in _ALLOWED_METHODS:
+            raise ConfigError(
+                f"Service '{sname}': unsupported HTTP method '{method_val}'. "
+                f"Allowed: {', '.join(sorted(_ALLOWED_METHODS))}"
+            )
+
         # groups must be a list of non-empty strings; reject other shapes.
         groups_raw = entry.get("groups", [])
         if not isinstance(groups_raw, list) or not all(
@@ -259,6 +270,7 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 if entry.get("error_rate_critical_pct") is not None
                 else None
             ),
+            method=str(entry.get("method", "GET")).upper(),
         )
         services.append(svc)
 
@@ -369,6 +381,12 @@ services:
     interval: 30
     timeout: 5
     tags: [local, smart-home]
+
+  - name: CDN Health
+    url: https://cdn.example.com/health
+    method: HEAD          # use HEAD for lightweight liveness checks (no body)
+    interval: 30
+    tags: [cdn, infra]
 
   - name: Router
     type: tcp

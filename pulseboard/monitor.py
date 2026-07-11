@@ -27,7 +27,11 @@ async def check_http(service: ServiceConfig) -> CheckResult:
             follow_redirects=True,
             verify=True,
         ) as client:
-            resp = await client.get(service.url, headers=service.headers)
+            resp = await client.request(
+                service.method,
+                service.url,
+                headers=service.headers,
+            )
             elapsed_ms = (time.monotonic() - start) * 1000
 
             is_rate_limited = resp.status_code == 429

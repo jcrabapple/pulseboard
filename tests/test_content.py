@@ -296,7 +296,7 @@ class TestCheckHttpIntegration:
         resp = self._mock_response(200, '{"status": "healthy", "msg": "all ok"}')
 
         async def _run() -> CheckResult:
-            with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=resp)):
+            with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=resp)):
                 return await check_http(svc)
 
         result = asyncio.run(_run())
@@ -314,7 +314,7 @@ class TestCheckHttpIntegration:
         resp = self._mock_response(200, '{"status": "degraded"}')
 
         async def _run() -> CheckResult:
-            with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=resp)):
+            with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=resp)):
                 return await check_http(svc)
 
         result = asyncio.run(_run())
@@ -332,7 +332,7 @@ class TestCheckHttpIntegration:
         resp = self._mock_response(200, "")
 
         async def _run() -> CheckResult:
-            with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=resp)):
+            with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=resp)):
                 return await check_http(svc)
 
         result = asyncio.run(_run())
@@ -351,7 +351,7 @@ class TestCheckHttpIntegration:
         resp = self._mock_response(500, "internal server error")
 
         async def _run() -> CheckResult:
-            with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=resp)):
+            with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=resp)):
                 return await check_http(svc)
 
         result = asyncio.run(_run())
@@ -366,7 +366,7 @@ class TestCheckHttpIntegration:
         resp = self._mock_response(200, '{"status": "anything"}')
 
         async def _run() -> CheckResult:
-            with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=resp)):
+            with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=resp)):
                 return await check_http(svc)
 
         result = asyncio.run(_run())
