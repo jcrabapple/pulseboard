@@ -962,3 +962,92 @@ class TestAlertCooldown:
         assert degraded is not None
         assert degraded.alert_type == "degraded"
 
+
+# ---------------------------------------------------------------------------
+# Alert re-alert / escalation
+# ---------------------------------------------------------------------------
+
+
+class TestReAlert:
+    """When a service stays DOWN for many consecutive checks, the
+    AlertManager should re-fire an alert after a configured threshold of
+    consecutive failures so a missed initial alert doesn't leave the
+    user blind until recovery.
+
+    Behaviour contract:
+      - ``re_alert_every_n_failures`` is an opt-in integer (0/disable
+        by default, so existing behaviour is unchanged).
+      - When the threshold is set, every Nth consecutive failure
+        re-fires the alert with ``consecutive_failures`` reflecting the
+        current count.
+      - Works for both DOWN and DEGRADED outages.
+    """
+
+    def test_no_re_alert_without_threshold(self) -> None:
+        """Default behaviour (no threshold): stay silent between
+        transition and recovery."""
+        mgr = AlertManager()  # re_alert_every_n_failures defaults to 0
+        mgr.evaluate(_r("api", Status.UP, 0))
+        first = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert first is not None
+        # Subsequent DOWNs with no status change -> no re-alert.
+        for i in range(2, 10):
+            assert mgr.evaluate(_r("api", Status.DOWN, 60 * i, error="boom")) is None
+
+    def test_re_alert_fires_at_nth_failure(self) -> None:
+        """With threshold=3, the 3rd consecutive DOWN refires."""
+        mgr = AlertManager(re_alert_every_n_failures=3)
+        mgr.evaluate(_r("api", Status.UP, 0))
+        first = mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert first is not None
+        assert first.consecutive_failures == 1
+
+        # 2nd, 3rd, 4th DOWN: silent until 3rd.
+        assert mgr.evaluate(_r("api", Status.DOWN, 120, error="boom")) is None
+        r3 = mgr.evaluate(_r("api", Status.DOWN, 180, error="boom"))
+        assert r3 is not None
+        # Re-alerts carry the current count.
+        assert r3.consecutive_failures == 3
+        # 4th, 5th: silent until 6th.
+        assert mgr.evaluate(_r("api", Status.DOWN, 240, error="boom")) is None
+        assert mgr.evaluate(_r("api", Status.DOWN, 300, error="boom")) is None
+        r6 = mgr.evaluate(_r("api", Status.DOWN, 360, error="boom"))
+        assert r6 is not None
+        assert r6.consecutive_failures == 6
+
+    def test_re_alert_text_carries_failure_count(self) -> None:
+        mgr = AlertManager(re_alert_every_n_failures=2)
+        mgr.evaluate(_r("api", Status.UP, 0))
+        mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        second = mgr.evaluate(_r("api", Status.DOWN, 120, error="boom"))
+        assert second is not None
+        assert "2 failures" in second.message
+
+    def test_re_alert_resets_on_recovery(self) -> None:
+        """Re-alert count must reset when service recovers, so a fresh
+        outage restarts the threshold counter from 1."""
+        mgr = AlertManager(re_alert_every_n_failures=2)
+        mgr.evaluate(_r("api", Status.UP, 0))
+        mgr.evaluate(_r("api", Status.DOWN, 60, error="boom"))
+        assert mgr.evaluate(_r("api", Status.DOWN, 120, error="boom")) is not None
+        # Recovery.
+        assert mgr.evaluate(_r("api", Status.UP, 180)) is not None
+        # Fresh outage: first DOWN fires (transition), second DOWN refires.
+        assert mgr.evaluate(_r("api", Status.DOWN, 240, error="boom")) is not None
+        assert mgr.evaluate(_r("api", Status.DOWN, 300, error="boom")) is not None
+
+    def test_re_alert_works_for_degraded(self) -> None:
+        """A service stuck in DEGRADED should also refire after the
+        threshold of consecutive failures."""
+        mgr = AlertManager(re_alert_every_n_failures=2)
+        mgr.evaluate(_r("api", Status.UP, 0))
+        # Transition to DEGRADED fires the transition alert.
+        first = mgr.evaluate(_r("api", Status.DEGRADED, 60, error="slow"))
+        assert first is not None
+        assert first.alert_type == "degraded"
+        # 2nd DEGRADED: refire.
+        second = mgr.evaluate(_r("api", Status.DEGRADED, 120, error="slow"))
+        assert second is not None
+        assert second.alert_type == "degraded"
+        assert second.consecutive_failures == 2
+

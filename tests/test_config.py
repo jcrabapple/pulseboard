@@ -267,3 +267,25 @@ def test_parse_services_accepts_valid_expected_status_204() -> None:
     }
     services = parse_services(config)
     assert services[0].expected_status == 204
+
+
+# ---------------------------------------------------------------------------
+# re_alert_every_n_failures setting
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_defaults_re_alert_to_zero() -> None:
+    """When omitted from config, re_alert_every_n_failures defaults to 0
+    (disabled) — backward compatible."""
+    from pulseboard.config import get_settings
+
+    settings = get_settings({})
+    assert settings["re_alert_every_n_failures"] == 0
+
+
+def test_get_settings_reads_re_alert_from_config() -> None:
+    """A user-provided value is surfaced verbatim."""
+    from pulseboard.config import get_settings
+
+    settings = get_settings({"settings": {"re_alert_every_n_failures": 5}})
+    assert settings["re_alert_every_n_failures"] == 5

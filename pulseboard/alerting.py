@@ -18,10 +18,16 @@ class AlertManager:
         self,
         alert_on_recovery: bool = True,
         alert_cooldown_seconds: float = 0.0,
+        re_alert_every_n_failures: int = 0,
         clock: Callable[[], datetime] | None = None,
     ):
         self.alert_on_recovery = alert_on_recovery
         self.alert_cooldown_seconds = alert_cooldown_seconds
+        # When > 0, refire an alert of the current alert type every Nth
+        # consecutive failure so a missed initial alert doesn't leave
+        # the user blind during a long outage. 0 disables (the default)
+        # — existing behaviour unchanged.
+        self.re_alert_every_n_failures = re_alert_every_n_failures
         self._clock = clock
         self._previous_status: dict[str, Status] = {}
         # Per-service count of consecutive non-UP checks. Incremented on
@@ -106,7 +112,41 @@ class AlertManager:
                         consecutive_failures=failures,
                     ),
                 )
-        return None
+        return self._maybe_re_alert(result, failures)
+
+    def _maybe_re_alert(
+        self, result: CheckResult, failures: int
+    ) -> Alert | None:
+        """Refire an alert when the threshold is configured and the
+        current alert type is non-UP and ``failures`` is a positive
+        multiple of the threshold.
+
+        Uses ``_maybe_suppress`` so cooldown dedup still applies to
+        re-alerts within the same window.
+        """
+        if self.re_alert_every_n_failures <= 0:
+            return None
+        if result.status == Status.UP:
+            return None
+        if failures <= 0 or failures % self.re_alert_every_n_failures != 0:
+            return None
+
+        # service didn't actually transition, use previous status as
+        # ``prev`` was already updated in evaluate.
+        prev_status = self._previous_status.get(result.service_name)
+        alert_type = AlertType.DOWN if prev_status == Status.DOWN else AlertType.DEGRADED
+        msg_prefix = "🔴" if alert_type == AlertType.DOWN else "🟡"
+        return self._maybe_suppress(
+            result.service_name,
+            alert_type,
+            Alert(
+                service_name=result.service_name,
+                alert_type=alert_type,
+                result=result,
+                message=f"{msg_prefix} {result.service_name} still DOWN after {failures} failures: {result.error}",
+                consecutive_failures=failures,
+            ),
+        )
 
     def _maybe_suppress(
         self, service_name: str, alert_type: str, alert: Alert

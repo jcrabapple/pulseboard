@@ -371,6 +371,11 @@ def get_settings(raw: dict[str, Any]) -> dict[str, Any]:
         "db_path": str(Path.home() / ".local" / "share" / "pulseboard" / "pulseboard.db"),
         "check_interval": 60,
         "alert_on_recovery": True,
+        "alert_cooldown_seconds": 0,
+        # Refire an alert every Nth consecutive failure during a sustained
+        # outage so a missed initial alert doesn't blind the user until
+        # recovery. 0 disables (default — backward compatible).
+        "re_alert_every_n_failures": 0,
         "dashboard_refresh": 5,
         "history_days": 30,
         "notification_channels": [],
@@ -389,6 +394,7 @@ settings:
   dashboard_refresh: 5      # TUI refresh interval (seconds)
   alert_on_recovery: true
   alert_cooldown_seconds: 0  # suppress repeat alerts within N seconds (0 = off)
+  re_alert_every_n_failures: 0  # refire alert every Nth consecutive failure (0 = off)
   history_days: 30          # how long to keep check history
 
 services:

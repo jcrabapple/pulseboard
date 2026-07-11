@@ -137,6 +137,7 @@ def watch(config: str | None, once: bool) -> None:
     alerter = AlertManager(
         alert_on_recovery=settings.get("alert_on_recovery", True),
         alert_cooldown_seconds=settings.get("alert_cooldown_seconds", 0.0),
+        re_alert_every_n_failures=settings.get("re_alert_every_n_failures", 0),
     )
     notifier = NotificationDispatcher.from_config(
         settings.get("notification_channels", [])
@@ -254,6 +255,7 @@ def dashboard(config: str | None) -> None:
     alerter = AlertManager(
         alert_on_recovery=settings.get("alert_on_recovery", True),
         alert_cooldown_seconds=settings.get("alert_cooldown_seconds", 0.0),
+        re_alert_every_n_failures=settings.get("re_alert_every_n_failures", 0),
     )
     notifier = NotificationDispatcher.from_config(
         settings.get("notification_channels", [])

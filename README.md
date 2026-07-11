@@ -23,7 +23,7 @@ A personal uptime monitor and service dashboard CLI. Track any URL or endpoint, 
 - **SQLite history** — every check stored, queryable, prunable, and exportable
 - **CSV/JSON export** — pipe-friendly history export with rich filters
 - **Live TUI dashboard** — Rich-powered terminal UI with latency bars, P95/P99 stats
-- **Alerting** — webhook notifications + terminal bell on status changes, with configurable cooldown deduplication
+- **Alerting** — webhook notifications + terminal bell on status changes, with configurable cooldown deduplication and re-alert escalation for sustained outages
 - **Notification channels** — Slack, Discord, Telegram, email (SMTP), and generic JSON webhooks
 - **Incident timeline** — durable, queryable history of every state-change outage with duration tracking
 - **Service groups** — tag services with logical groups, roll up worst-case status per group
@@ -558,6 +558,26 @@ to disable deduplication entirely.
 settings:
   alert_cooldown_seconds: 300   # don't re-alert the same type within 5 minutes
 ```
+
+### Re-alerting (escalation)
+
+When a service stays DOWN across many checks, the initial transition alert
+may have been missed or the notification delivery may have failed.
+`re_alert_every_n_failures` refires the alert of the current type every
+Nth consecutive failure, so a sustained outage resurfaces itself.
+
+The behaviour composes with cooldown: re-alerts pass through the same
+cooldown dedup, so setting both is safe. When the threshold is `0` (the
+default) the feature is off — existing behaviour is unchanged.
+
+```yaml
+settings:
+  re_alert_every_n_failures: 5   # refire every 5th consecutive failure
+```
+
+The re-alert carries the current `consecutive_failures` count in its
+webhook payload so downstream automation can escalate differently
+after N failures.
 
 The email channel sends an RFC 5322 message with a multipart
 plain/HTML body (so Gmail, Outlook, and Apple Mail all render it
