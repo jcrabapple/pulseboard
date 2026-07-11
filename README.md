@@ -243,6 +243,7 @@ A DOWN status from the underlying check is never upgraded by thresholds.
 | `pulseboard notify-test` | Send a synthetic alert through every configured notification channel |
 | `pulseboard notify-list` | List configured notification channels |
 | `pulseboard incidents` | View the incident timeline (durable state-change history) |
+| `pulseboard alerts` | View the alert history log (durable audit trail of fired alerts) |
 | `pulseboard groups` | Show service-group roll-up and the dependency graph |
 | `pulseboard metrics` | Export check history as Prometheus metrics (stdout, textfile, or HTTP) |
 | `pulseboard prune` | Clean old records |
@@ -289,6 +290,44 @@ The `incidents` table is schema-migrated automatically on first
 launch. The schema also includes a partial index on
 `(service_name) WHERE ended_at IS NULL` so the "what's still
 broken right now" query stays fast as the history grows.
+
+## Alert History
+
+The `pulseboard alerts` command shows a durable audit trail of every
+fired alert (down, recovery, degraded, re-alert). Unlike the
+in-memory `AlertManager` (which deduplicates and discards), this log
+persists to SQLite so you can answer "did we alert on this outage?"
+and "what was sent, when, and for which service?" — even after a
+watcher restart.
+
+Every time `pulseboard watch` or `pulseboard dashboard` fires an
+alert, it writes a row to the `alerts` table with the timestamp,
+service name, alert type, status, message, latency, error, and
+consecutive failure count. The `pulseboard alerts` command lets you
+query that history:
+
+```bash
+# Recent alerts, newest first
+pulseboard alerts
+
+# Last 6 hours only
+pulseboard alerts --hours 6
+
+# Alerts for one service
+pulseboard alerts -s "api"
+
+# Only recovery alerts
+pulseboard alerts --type recovery
+
+# JSON output for piping into other tools
+pulseboard alerts --json
+
+# At most 50 most-recent alerts
+pulseboard alerts --limit 50
+```
+
+The `alerts` table is schema-migrated automatically on first launch
+and is pruned alongside checks and incidents by `auto_prune`.
 
 ## Prometheus Metrics Export
 
@@ -597,6 +636,11 @@ pytest
 ## Changelog
 
 ### Unreleased
+- New `pulseboard alerts` command: query the durable alert history log with rich table + JSON output, filters by service, hours, type, and limit
+- New `alerts` SQLite table auto-created on first use: every fired alert (down, recovery, degraded, re-alert) is persisted with timestamp, service name, alert type, status, message, latency, error, and consecutive failure count
+- New `Storage.record_alert()` and `Storage.get_alerts()` methods for reading/writing the alert log
+- New `Storage.prune_alerts()` method, called automatically by `auto_prune()` to keep the alert log bounded
+- The `watch` and `dashboard` loops now persist every fired alert to the log so operators can audit notification delivery after the fact
 - Fail-fast config validation for the `port` field on TCP/SSL services: out-of-range (>65535 or <1), non-integer, and boolean values are rejected at config-load time with a clear `ConfigError` instead of failing later as an opaque OS-level connect error during checks
 - Rate-limit backoff is now wired into the `watch` and `dashboard` loops — when a target returns HTTP 429, PulseBoard skips subsequent checks for that service until the Retry-After window expires, then resumes automatically. Skipped services get a synthetic DEGRADED result (no HTTP request is made), so storage, alerting, and dashboards continue to update without hammering the rate-limited target
 - New `RateLimitBackoff.filter_active()` partitions services into those to check vs those to skip, and `synthesize_backoff_result()` builds the synthetic CheckResult for skipped services

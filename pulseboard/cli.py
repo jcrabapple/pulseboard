@@ -193,6 +193,10 @@ def watch(config: str | None, once: bool) -> None:
                         (s for s in services if s.name == r.service_name), None
                     )
                     notifier.dispatch_sync(alert, svc)
+                    # Persist the fired alert so it can be queried later
+                    # via ``pulseboard alerts`` — a durable audit trail
+                    # of what was sent, when, and for which service.
+                    storage.record_alert(alert)
                 # Persist incident timeline state (durable) regardless of
                 # whether an alert fires. The helper is a no-op when the
                 # service stays in the same state, so this is cheap.
@@ -300,6 +304,7 @@ def dashboard(config: str | None) -> None:
                             (s for s in services if s.name == r.service_name), None
                         )
                         notifier.dispatch_sync(alert, svc)
+                        storage.record_alert(alert)
                     from .incidents import _record_state_change
                     _record_state_change(storage, prev, r)
 
@@ -1134,6 +1139,138 @@ def groups(
             "\n[dim]Pass --group <name> to focus on one group, "
             "or --graph to view the dependency graph.[/dim]"
         )
+
+
+@cli.command()
+@click.option("--config", "-c", type=click.Path(), default=None, help="Config file path")
+@click.option("--service", "-s", default=None,
+              help="Show only alerts for this service name.")
+@click.option("--hours", default=None, type=int,
+              help="Only show alerts from the last N hours.")
+@click.option("--from", "since_iso", default=None,
+              help="Only show alerts at or after this ISO timestamp (UTC).")
+@click.option("--to", "until_iso", default=None,
+              help="Only show alerts at or before this ISO timestamp (UTC).")
+@click.option("--type", "alert_type", default=None,
+              type=click.Choice(["down", "recovery", "degraded"], case_sensitive=False),
+              help="Filter by alert type. Default: all.")
+@click.option("--limit", default=None, type=int,
+              help="Maximum number of alerts to show (most recent first).")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def alerts(
+    config: str | None,
+    service: str | None,
+    hours: int | None,
+    since_iso: str | None,
+    until_iso: str | None,
+    alert_type: str | None,
+    limit: int | None,
+    as_json: bool,
+) -> None:
+    """Show the alert history log — a durable audit trail of fired alerts.
+
+    Every time PulseBoard fires an alert (down, recovery, degraded, re-alert),
+    the ``watch`` and ``dashboard`` loops persist a record.  This command
+    lets you query that history:
+
+    \b
+        pulseboard alerts                    # recent alerts
+        pulseboard alerts --service api       # alerts for one service
+        pulseboard alerts --hours 6           # last 6 hours
+        pulseboard alerts --type recovery     # only recovery alerts
+        pulseboard alerts --json               # machine-readable
+    """
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        sys.exit(1)
+
+    settings = get_settings(cfg)
+    storage = Storage(settings["db_path"])
+
+    since: datetime | None = None
+    until: datetime | None = None
+    if hours is not None:
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    if since_iso is not None:
+        since = datetime.fromisoformat(since_iso)
+    if until_iso is not None:
+        until = datetime.fromisoformat(until_iso)
+
+    type_filter = alert_type.lower() if alert_type is not None else None
+
+    results = storage.get_alerts(
+        service_name=service,
+        alert_type=type_filter,
+        since=since,
+        until=until,
+        order="desc",
+        limit=limit,
+    )
+
+    if as_json:
+        click.echo(json.dumps(results, indent=2, default=str))
+        storage.close()
+        return
+
+    if not results:
+        console.print("[yellow]No alerts recorded in this window.[/yellow]")
+        console.print(
+            "Run [bold]pulseboard watch[/bold] "
+            "(or [bold]pulseboard dashboard[/bold]) to start alerting."
+        )
+        storage.close()
+        sys.exit(0)
+
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(
+        title="⚡ PulseBoard — Alert History",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Time", width=19, style="dim")
+    table.add_column("Service", style="bold", min_width=16)
+    table.add_column("Type", width=9, justify="center")
+    table.add_column("Failures", width=9, justify="right")
+    table.add_column("Message", max_width=80)
+
+    for r in results:
+        ts = r.get("timestamp", "?")
+        try:
+            dt = datetime.fromisoformat(ts)
+            ts_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            ts_str = str(ts)
+
+        a_type = r.get("alert_type", "?")
+        style = "red" if a_type == "down" else "green" if a_type == "recovery" \
+            else "yellow"
+        type_label = Text(a_type.upper(), style=f"bold {style}")
+
+        msg = r.get("message", "") or ""
+        if len(msg) > 100:
+            msg = msg[:97] + "..."
+        failures = r.get("consecutive_failures", 0)
+        fail_str = str(failures) if failures else "—"
+
+        table.add_row(
+            ts_str,
+            r.get("service_name", "?"),
+            type_label,
+            fail_str,
+            msg,
+        )
+
+    console.print(table)
+    console.print(
+        f"\n[dim]{len(results)} alert(s) in this window.[/dim]"
+    )
+    storage.close()
 
 
 if __name__ == "__main__":

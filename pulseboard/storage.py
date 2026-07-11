@@ -99,6 +99,24 @@ class Storage:
 
             CREATE INDEX IF NOT EXISTS idx_incidents_open
                 ON incidents(service_name) WHERE ended_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                service_name TEXT NOT NULL,
+                alert_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT,
+                latency_ms REAL NOT NULL DEFAULT 0,
+                error TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_alerts_service_ts
+                ON alerts(service_name, timestamp DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_alerts_type
+                ON alerts(alert_type, timestamp DESC);
         """)
 
     def store(self, result: CheckResult) -> None:
@@ -325,20 +343,21 @@ class Storage:
         return cursor.rowcount
 
     def auto_prune(self, history_days: int = 30) -> int:
-        """Prune checks **and** incidents older than ``history_days``.
+        """Prune checks, incidents, **and** alerts older than ``history_days``.
 
         Called by the ``watch`` loop after each batch of results is stored
         so the SQLite database doesn't grow unbounded during long-term
         monitoring. When ``history_days`` is ``0``, pruning is disabled
         (nothing is deleted).
 
-        Returns the number of **check** rows deleted (incidents are a
-        side-effect and not counted in the return value).
+        Returns the number of **check** rows deleted (incidents and alerts
+        are a side-effect and not counted in the return value).
         """
         if history_days <= 0:
             return 0
         deleted = self.prune(days=history_days)
         self.prune_incidents(days=history_days)
+        self.prune_alerts(days=history_days)
         return deleted
 
     # ------------------------------------------------------------------
@@ -530,6 +549,107 @@ class Storage:
         )
         self.conn.commit()
         return cur.rowcount
+
+    def prune_alerts(self, days: int = 30) -> int:
+        """Delete alert-log rows older than ``days``. Returns count deleted.
+
+        Keeps the alert log bounded during long-term monitoring. Called
+        automatically by :meth:`auto_prune` alongside check and incident
+        pruning.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cur = self.conn.execute(
+            "DELETE FROM alerts WHERE timestamp < ?", (cutoff,)
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # Alert log
+    # ------------------------------------------------------------------
+
+    def record_alert(self, alert: "Alert") -> int:
+        """Persist a fired :class:`~pulseboard.alerting.Alert` to the log.
+
+        Creates a durable record of every alert dispatched (down, recovery,
+        degraded, re-alert).  Callers can then query :meth:`get_alerts` to
+        audit notification delivery or check what was sent during an outage.
+
+        Returns the row id of the inserted alert.
+        """
+        # ``timestamp`` on the Alert is set at construction time, which
+        # is the moment the AlertManager decided to fire — the right
+        # instant to record.
+        ts = alert.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        cur = self.conn.execute(
+            """INSERT INTO alerts
+                   (timestamp, service_name, alert_type, status, message,
+                    latency_ms, error, consecutive_failures)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                ts.isoformat(),
+                alert.service_name,
+                alert.alert_type,
+                alert.result.status.value,
+                alert.message,
+                alert.result.latency_ms,
+                alert.result.error,
+                alert.consecutive_failures,
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def get_alerts(
+        self,
+        service_name: str | None = None,
+        alert_type: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        order: str = "desc",
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query the alert log with optional filters.
+
+        Args:
+            service_name: Only alerts for this service.
+            alert_type: Filter by alert type (``"down"``, ``"recovery"``,
+                ``"degraded"``).
+            since: Only alerts at or after this time (UTC).
+            until: Only alerts at or before this time (UTC).
+            order: ``"desc"`` (newest first, the default) or ``"asc"``.
+            limit: Return at most this many rows.
+
+        Returns a list of dict rows (suitable for JSON serialization or
+        table rendering).
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if service_name is not None:
+            clauses.append("service_name = ?")
+            params.append(service_name)
+        if alert_type is not None:
+            clauses.append("alert_type = ?")
+            params.append(alert_type)
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since.isoformat())
+        if until is not None:
+            clauses.append("timestamp <= ?")
+            params.append(until.isoformat())
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        direction = "DESC" if order.lower() == "desc" else "ASC"
+        query = (
+            f"SELECT * FROM alerts {where} ORDER BY timestamp {direction}"
+        )
+        if limit is not None:
+            query += f" LIMIT {int(limit)}"
+
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self) -> None:
         if self._conn:
