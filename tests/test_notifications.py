@@ -139,6 +139,14 @@ class TestSlackRenderer:
         payload = render_slack_payload(_make_alert())
         assert isinstance(payload["attachments"][0]["ts"], int)
 
+    def test_field_includes_consecutive_failures_when_nonzero(self):
+        alert = _make_alert()
+        alert.consecutive_failures = 5
+        payload = render_slack_payload(alert)
+        names = [f.get("title") for f in payload["attachments"][0].get("fields", [])]
+        assert "Consecutive failures" in names
+        assert any("5" in f["value"] for f in payload["attachments"][0]["fields"])
+
 
 class TestDiscordRenderer:
     def test_has_content_and_embed(self):
@@ -162,6 +170,14 @@ class TestDiscordRenderer:
         names = [f["name"] for f in payload["embeds"][0]["fields"]]
         assert "Status code" not in names
 
+    def test_field_includes_consecutive_failures_when_nonzero(self):
+        alert = _make_alert()
+        alert.consecutive_failures = 5
+        payload = render_discord_payload(alert)
+        names = [f["name"] for f in payload["embeds"][0]["fields"]]
+        assert "Consecutive failures" in names
+        assert any("5" in f["value"] for f in payload["embeds"][0]["fields"])
+
 
 class TestTelegramRenderer:
     def test_markdown_text(self):
@@ -174,6 +190,13 @@ class TestTelegramRenderer:
     def test_disables_web_page_preview(self):
         payload = render_telegram_payload(_make_alert())
         assert payload["disable_web_page_preview"] is True
+
+    def test_includes_consecutive_failures_when_nonzero(self):
+        alert = _make_alert()
+        alert.consecutive_failures = 5
+        payload = render_telegram_payload(alert)
+        assert "Consecutive failures" in payload["text"]
+        assert "5" in payload["text"]
 
 
 class TestWebhookRenderer:

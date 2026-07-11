@@ -103,6 +103,8 @@ def _alert_description(alert: Alert) -> str:
     latency = alert.result.latency_ms
     if latency:
         lines.append(f"Latency: {latency:.0f} ms")
+    if alert.consecutive_failures:
+        lines.append(f"Consecutive failures: {alert.consecutive_failures}")
     if alert.result.error and alert.alert_type != AlertType.DOWN:
         lines.append(f"Reason: {alert.result.error}")
     if alert.result.status_code is not None:
@@ -124,17 +126,25 @@ def render_slack_payload(alert: Alert) -> dict[str, Any]:
     title = _alert_title(alert)
     description = _alert_description(alert)
     color_hex = f"#{STATUS_COLOR.get(alert.result.status, 0x95A5A6):06X}"
+    fields: list[dict[str, Any]] = []
+    if alert.consecutive_failures:
+        fields.append({
+            "title": "Consecutive failures",
+            "value": str(alert.consecutive_failures),
+            "short": True,
+        })
+    attachment: dict[str, Any] = {
+        "color": color_hex,
+        "title": title,
+        "text": description,
+        "footer": "PulseBoard",
+        "ts": int(alert.timestamp.timestamp()),
+    }
+    if fields:
+        attachment["fields"] = fields
     return {
         "text": title,  # fallback for clients that don't render attachments
-        "attachments": [
-            {
-                "color": color_hex,
-                "title": title,
-                "text": description,
-                "footer": "PulseBoard",
-                "ts": int(alert.timestamp.timestamp()),
-            }
-        ],
+        "attachments": [attachment],
     }
 
 
@@ -166,6 +176,12 @@ def render_discord_payload(alert: Alert) -> dict[str, Any]:
             }
         )
     fields.append({"name": "Alert", "value": alert.alert_type, "inline": True})
+    if alert.consecutive_failures:
+        fields.append({
+            "name": "Consecutive failures",
+            "value": str(alert.consecutive_failures),
+            "inline": True,
+        })
     return {
         "content": title,
         "embeds": [
