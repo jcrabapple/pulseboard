@@ -94,9 +94,56 @@ async def test_http_check_defaults_to_get_method() -> None:
         result = await check_http(service)
 
     assert result.status == Status.UP
-    client.request.assert_called_once_with(
-        "GET", service.url, headers=service.headers
+    client.request.assert_called_once()
+    call = client.request.call_args
+    assert call.args[0] == "GET"
+    assert call.args[1] == service.url
+    # Headers now include a default PulseBoard User-Agent.
+    assert call.kwargs["headers"].get("User-Agent", "").startswith("PulseBoard/")
+
+
+@pytest.mark.asyncio
+async def test_http_check_sends_pulseboard_user_agent() -> None:
+    """The HTTP check should identify itself with a PulseBoard/<version> User-Agent.
+
+    Target services can use this to filter firewall / rate-limit rules,
+    log the monitor separately from random scrapers, and correlate traffic.
+    """
+    from pulseboard import __version__
+
+    service = ServiceConfig(name="ua-check", url="https://example.com/health")
+
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=_response())
+
+        result = await check_http(service)
+
+    assert result.status == Status.UP
+    # The third positional arg to client.request is ``headers``.
+    sent_headers = client.request.call_args.kwargs["headers"]
+    assert sent_headers.get("User-Agent") == f"PulseBoard/{__version__}"
+
+
+@pytest.mark.asyncio
+async def test_http_check_respects_user_configured_user_agent() -> None:
+    """A user-set ``User-Agent`` header in config overrides the default."""
+    service = ServiceConfig(
+        name="custom-ua",
+        url="https://example.com/health",
+        headers={"User-Agent": "my-monitor/1.0"},
     )
+
+    with patch("pulseboard.monitor.httpx.AsyncClient") as client_class:
+        client = client_class.return_value.__aenter__.return_value
+        client.request = AsyncMock(return_value=_response())
+
+        result = await check_http(service)
+
+    assert result.status == Status.UP
+    sent_headers = client.request.call_args.kwargs["headers"]
+    # User-configured UA wins; we do not clobber it.
+    assert sent_headers.get("User-Agent") == "my-monitor/1.0"
 
 
 @pytest.mark.asyncio
@@ -113,9 +160,9 @@ async def test_http_check_uses_HEAD_method_when_configured() -> None:
         result = await check_http(service)
 
     assert result.status == Status.UP
-    client.request.assert_called_once_with(
-        "HEAD", service.url, headers=service.headers
-    )
+    call = client.request.call_args
+    assert call.args[0] == "HEAD"
+    assert call.args[1] == service.url
 
 
 @pytest.mark.asyncio
@@ -132,9 +179,10 @@ async def test_http_check_uses_POST_method_when_configured() -> None:
         result = await check_http(service)
 
     assert result.status == Status.UP
-    client.request.assert_called_once_with(
-        "POST", service.url, headers=service.headers
-    )
+    call = client.request.call_args
+    assert call.args[0] == "POST"
+    assert call.args[1] == service.url
+
 
 
 def _redirect_response(status_code: int, location: str) -> MagicMock:

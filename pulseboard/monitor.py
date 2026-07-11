@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable
 
 import httpx
 
+from . import __version__
 from .models import CheckResult, ServiceConfig, ServiceType, Status
 from .content_check import has_content_checks, validate_body
 from .dns_check import check_dns
@@ -21,6 +22,13 @@ from .groups import apply_dependency_impact
 async def check_http(service: ServiceConfig) -> CheckResult:
     """Run an HTTP health check."""
     start = time.monotonic()
+    # Merge a default User-Agent identifying PulseBoard onto the
+    # user-configured headers. We copy the dict first so we don't
+    # mutate the ServiceConfig in place (which would leak the default
+    # back into the config object). A user-set ``User-Agent`` always
+    # wins — we only fill in when one isn't already present.
+    headers = dict(service.headers)
+    headers.setdefault("User-Agent", f"PulseBoard/{__version__}")
     try:
         async with httpx.AsyncClient(
             timeout=service.timeout,
@@ -30,7 +38,7 @@ async def check_http(service: ServiceConfig) -> CheckResult:
             resp = await client.request(
                 service.method,
                 service.url,
-                headers=service.headers,
+                headers=headers,
             )
             elapsed_ms = (time.monotonic() - start) * 1000
 
