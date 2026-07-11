@@ -184,6 +184,75 @@ class TestToJson:
         assert payload["count"] == 0
         assert payload["records"] == []
 
+    def test_json_record_includes_details_dict(self):
+        """JSON export records must carry the rich ``details`` dict so
+        downstream analysis tools can inspect redirect chains, rate-limit
+        hints, content-validation reports, threshold outcomes, dependency
+        impact, SSL cert metadata, and DNS answers. CSV exports stay flat
+        (by design), but JSON should not silently drop this data — it's
+        the whole reason a user picks the JSON format over CSV. Tests for
+        the CSV path confirm it still omits ``details``.
+        """
+        result = CheckResult(
+            service_name="api",
+            timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            status=Status.DEGRADED,
+            latency_ms=312.0,
+            status_code=200,
+            error="latency 312ms ≥ warning 300ms",
+            details={
+                "redirect_count": 1,
+                "final_url": "https://api.example.com/v2/",
+                "thresholds": {"latency_violation": "warning"},
+                "content_checks": [{"check": "body_contains", "passed": True}],
+            },
+        )
+        payload = json.loads(export.to_json([result]))
+        record = payload["records"][0]
+        assert "details" in record, "JSON export must include the details dict"
+        assert record["details"]["redirect_count"] == 1
+        assert record["details"]["final_url"] == "https://api.example.com/v2/"
+        assert "thresholds" in record["details"]
+        assert "content_checks" in record["details"]
+
+    def test_json_record_details_present_even_when_empty(self):
+        """A result with no details dict should still produce a ``details``
+        key (as an empty dict) so consumers don't have to branch on the
+        key's presence.
+        """
+        result = CheckResult(
+            service_name="plain",
+            timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            status=Status.UP,
+            latency_ms=12.0,
+            status_code=200,
+        )
+        payload = json.loads(export.to_json([result]))
+        record = payload["records"][0]
+        assert "details" in record
+        assert record["details"] == {}
+
+    def test_csv_record_omits_details_column(self):
+        """CSV export must remain flat — the ``details`` dict is not a
+        column. The CSV columns are fixed at the stable header and
+        must not grow a loosely-named ``details`` column. This confirms
+        the JSON-only behaviour of the previous tests is a deliberate
+        format difference, not an oversight.
+        """
+        result = CheckResult(
+            service_name="x",
+            timestamp=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            status=Status.UP,
+            latency_ms=10.0,
+            status_code=200,
+            details={"redirect_count": 2},
+        )
+        text = export.to_csv([result])
+        reader = csv.DictReader(io.StringIO(text))
+        row = next(iter(reader))
+        assert "details" not in row, "CSV export must not include a details column"
+        assert set(row.keys()) == set(export.CSV_COLUMNS)
+
 
 # ---------------------------------------------------------------------------
 # write_export (filesystem)

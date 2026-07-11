@@ -255,6 +255,11 @@ class CheckResult:
 
         Unlike :meth:`to_dict` (which is a compact UI representation), this
         includes every column we want available in an analytics export.
+        The ``details`` dict is included so JSON exports carry the rich
+        structured data (redirect chains, rate-limit hints, content
+        checks, threshold outcomes, dependency impact, SSL metadata, DNS
+        answers). CSV exports ignore extra keys via ``DictWriter(extrasaction="ignore")``
+        so the flat column order is unaffected.
         """
         return {
             "service_name": self.service_name,
@@ -263,6 +268,7 @@ class CheckResult:
             "latency_ms": round(self.latency_ms, 2),
             "status_code": self.status_code,
             "error": self.error,
+            "details": self.details or {},
         }
 
 
