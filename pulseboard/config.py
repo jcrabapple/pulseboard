@@ -259,6 +259,33 @@ def parse_services(raw: dict[str, Any]) -> list[ServiceConfig]:
                 f"Service '{sname}': depends_on must not include itself"
             )
 
+        # --- ssl_expiry_warning_days validation ---
+        # A negative or non-numeric value here is silently wrong: a negative
+        # window disables the early-warning check entirely (a cert can't be
+        # "within -7 days of expiry" in a meaningful way), and a string
+        # crashes ``check_ssl`` at runtime with an opaque ``TypeError``
+        # during the ``days_left <= service.ssl_expiry_warning_days``
+        # comparison. Catch it at config-load time so the user gets a clear,
+        # fast error pointing at the service — mirroring how interval,
+        # timeout, port, expected_status, and body_regex are handled.
+        ssl_warn_val = entry.get("ssl_expiry_warning_days", 14)
+        if isinstance(ssl_warn_val, bool):
+            raise ConfigError(
+                f"Service '{sname}': ssl_expiry_warning_days must be a "
+                f"non-negative integer (days), got boolean"
+            )
+        if not isinstance(ssl_warn_val, int):
+            raise ConfigError(
+                f"Service '{sname}': ssl_expiry_warning_days must be a "
+                f"non-negative integer (days), got "
+                f"{type(ssl_warn_val).__name__}"
+            )
+        if ssl_warn_val < 0:
+            raise ConfigError(
+                f"Service '{sname}': ssl_expiry_warning_days must be >= 0 "
+                f"(days), got {ssl_warn_val}"
+            )
+
         # body_regex must be a compilable Python regex if set, otherwise
         # the error only surfaces at check time inside
         # :func:`pulseboard.content_check.validate_body`, where the
